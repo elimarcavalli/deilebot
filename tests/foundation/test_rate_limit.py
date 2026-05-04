@@ -6,10 +6,10 @@ import asyncio
 
 import pytest
 
-from deile_bot._testing import make_user
-from deile_bot.foundation.exceptions import RateLimited
-from deile_bot.foundation.rate_limit import RateLimiter, TokenBucket
-from deile_bot.foundation.settings import BotSettings, FoundationSettings
+from deilebot._testing import make_user
+from deilebot.foundation.exceptions import RateLimited
+from deilebot.foundation.rate_limit import RateLimiter, TokenBucket
+from deilebot.foundation.settings import BotSettings, FoundationSettings
 
 
 def _settings(burst=3, refill=60, concurrent=8) -> BotSettings:

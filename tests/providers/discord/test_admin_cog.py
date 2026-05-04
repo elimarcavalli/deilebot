@@ -6,7 +6,7 @@ from __future__ import annotations
 class TestAdminCogShape:
     def test_admin_cog_attaches_subcommands(self):
         """Verify AdminCog has the expected hybrid commands declared."""
-        from deile_bot.providers.discord.cogs.admin_cog import AdminCog
+        from deilebot.providers.discord.cogs.admin_cog import AdminCog
 
         # AdminCog declares hybrid_command(s); these end up as class attrs
         names = set()
@@ -19,7 +19,7 @@ class TestAdminCogShape:
 
 class TestEventsCogShape:
     def test_events_cog_construct(self):
-        from deile_bot.providers.discord.cogs.events_cog import EventsCog
+        from deilebot.providers.discord.cogs.events_cog import EventsCog
 
         cog = EventsCog.__new__(EventsCog)
         cog.bot = None

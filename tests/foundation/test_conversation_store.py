@@ -7,11 +7,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from deile_bot._testing import make_channel, make_envelope, make_user
-from deile_bot.foundation.conversation_store import ConversationStore
-from deile_bot.foundation.envelope import (Attachment, AttachmentKind,
+from deilebot._testing import make_channel, make_envelope, make_user
+from deilebot.foundation.conversation_store import ConversationStore
+from deilebot.foundation.envelope import (Attachment, AttachmentKind,
                                            ChannelScope)
-from deile_bot.foundation.exceptions import ConversationStoreError
+from deilebot.foundation.exceptions import ConversationStoreError
 
 
 @pytest.fixture

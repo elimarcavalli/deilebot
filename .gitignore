@@ -1,5 +1,5 @@
 # =============================================================================
-# .gitignore -- deile_bot
+# .gitignore -- deilebot
 # Stack: Python (asyncio + SQLite + provedores Discord/Telegram/WhatsApp)
 # =============================================================================
 

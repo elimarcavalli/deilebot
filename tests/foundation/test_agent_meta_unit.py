@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deile_bot.foundation.agent_meta import DeileAgentMetaProvider, ToolMeta
+from deilebot.foundation.agent_meta import DeileAgentMetaProvider, ToolMeta
 
 
 class _FakeTool:

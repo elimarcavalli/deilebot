@@ -10,8 +10,8 @@ commands = pytest.importorskip("discord.ext.commands")
 
 class TestHelpCog:
     async def test_help_cog_attaches(self):
-        from deile_bot.providers.discord.cogs.help_cog import HelpCog
-        from deile_bot.providers.discord.cogs.ping_cog import PingCog
+        from deilebot.providers.discord.cogs.help_cog import HelpCog
+        from deilebot.providers.discord.cogs.ping_cog import PingCog
 
         intents = discord.Intents.default()
         intents.message_content = True

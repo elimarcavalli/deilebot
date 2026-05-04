@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from deile_bot._testing import FakeAgentMetaProvider, FakeProviderAdapter
-from deile_bot.foundation.agent_meta import ToolMeta
-from deile_bot.foundation.capabilities import CapabilityCatalog
-from deile_bot.foundation.output_formatter import PlainTextFormatter
+from deilebot._testing import FakeAgentMetaProvider, FakeProviderAdapter
+from deilebot.foundation.agent_meta import ToolMeta
+from deilebot.foundation.capabilities import CapabilityCatalog
+from deilebot.foundation.output_formatter import PlainTextFormatter
 
 
 class TestSnapshot:

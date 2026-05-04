@@ -6,13 +6,13 @@ import asyncio
 
 import pytest
 
-from deile_bot.foundation.agent_bridge import (AgentInvocation,
+from deilebot.foundation.agent_bridge import (AgentInvocation,
                                                InProcessAgentBridge,
                                                _sanitize_extra_prompt,
                                                build_agent_bridge)
-from deile_bot.foundation.exceptions import (AgentInvocationError,
+from deilebot.foundation.exceptions import (AgentInvocationError,
                                              AgentInvocationTimeout)
-from deile_bot.foundation.settings import FoundationSettings
+from deilebot.foundation.settings import FoundationSettings
 
 
 class FakeAgent:
@@ -155,7 +155,7 @@ class TestBuilder:
             build_agent_bridge(FoundationSettings(agent_bridge_mode="in_process"))
 
     def test_oneshot_no_provider_ok(self):
-        from deile_bot.foundation.agent_bridge import \
+        from deilebot.foundation.agent_bridge import \
             OneshotSubprocessAgentBridge
 
         b = build_agent_bridge(FoundationSettings(agent_bridge_mode="oneshot_subprocess"))

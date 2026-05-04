@@ -7,7 +7,7 @@ from types import MappingProxyType
 
 import pytest
 
-from deile_bot.foundation.envelope import (Attachment, AttachmentKind, BotUser,
+from deilebot.foundation.envelope import (Attachment, AttachmentKind, BotUser,
                                            Channel, ChannelScope,
                                            ConversationWindow, MessageEnvelope,
                                            OutboundEnvelope, OutboundIntent,

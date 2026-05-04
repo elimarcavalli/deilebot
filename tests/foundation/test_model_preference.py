@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deile_bot.foundation.agent_bridge import AgentInvocation, InProcessAgentBridge
+from deilebot.foundation.agent_bridge import AgentInvocation, InProcessAgentBridge
 
 
 class _FakeAgent:
@@ -42,7 +42,7 @@ async def test_bridge_writes_forced_model_as_locked_override():
 
     assert agent.session.context_data["forced_model"] == "deepseek:deepseek-v4-pro"
     assert agent.session.context_data["model_override_locked"] is True
-    assert agent.session.context_data["model_override_lock_source"] == "deile_bot"
+    assert agent.session.context_data["model_override_lock_source"] == "deilebot"
     assert "preferred_model" not in agent.session.context_data
     assert "_bot_forced_model" not in agent.session.context_data
     assert response.model_used == "deepseek:deepseek-v4-pro"
@@ -73,7 +73,7 @@ async def test_bridge_clears_stale_bot_lock_when_forced_setting_is_absent():
     agent = _FakeAgent()
     agent.session.context_data["forced_model"] = "deepseek:deepseek-v4-pro"
     agent.session.context_data["model_override_locked"] = True
-    agent.session.context_data["model_override_lock_source"] = "deile_bot"
+    agent.session.context_data["model_override_lock_source"] = "deilebot"
     agent.session.context_data["preferred_model"] = "deepseek:deepseek-v4-pro"
     agent.session.context_data["_bot_forced_model"] = "deepseek:deepseek-v4-pro"
     bridge = InProcessAgentBridge(lambda: _agent_provider(agent))
@@ -96,7 +96,7 @@ async def test_bridge_clears_stale_bot_lock_when_forced_setting_is_absent():
 
 @pytest.mark.unit
 def test_bot_settings_env_model_controls(monkeypatch):
-    from deile_bot.foundation.settings import reset_bot_settings_cache, get_bot_settings
+    from deilebot.foundation.settings import reset_bot_settings_cache, get_bot_settings
 
     reset_bot_settings_cache()
     monkeypatch.setenv("DEILE_BOT_FORCED_MODEL", "deepseek:deepseek-v4-pro")

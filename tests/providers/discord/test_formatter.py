@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
-from deile_bot.providers.discord.formatter import DiscordOutputFormatter
+from deilebot.providers.discord.formatter import DiscordOutputFormatter
 
 
 class TestRender:

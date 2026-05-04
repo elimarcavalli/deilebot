@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot.foundation.interactive import (InteractiveButton,
+from deilebot.foundation.interactive import (InteractiveButton,
                                               InteractiveButtonRow,
                                               InteractiveList,
                                               InteractiveListSection,

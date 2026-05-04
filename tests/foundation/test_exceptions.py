@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot.foundation.exceptions import (AgentInvocationError,
+from deilebot.foundation.exceptions import (AgentInvocationError,
                                              AgentInvocationTimeout,
                                              BotFoundationError,
                                              CapabilityNotSupported,
