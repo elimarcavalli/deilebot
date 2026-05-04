@@ -6,13 +6,13 @@ import pytest
 from pydantic import SecretStr
 
 from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
-from deile_bot.foundation.envelope import ChannelScope, ConversationWindow
-from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+from deilebot.foundation.envelope import ChannelScope, ConversationWindow
+from deilebot.foundation.exceptions import (CapabilityNotSupported,
                                              ProviderError)
-from deile_bot.providers.whatsapp.adapter import WhatsAppAdapter
-from deile_bot.providers.whatsapp.formatter import WhatsAppFormatter
-from deile_bot.providers.whatsapp.normalizer import WhatsAppNormalizer
-from deile_bot.providers.whatsapp.settings import (WHATSAPP_CAPABILITIES,
+from deilebot.providers.whatsapp.adapter import WhatsAppAdapter
+from deilebot.providers.whatsapp.formatter import WhatsAppFormatter
+from deilebot.providers.whatsapp.normalizer import WhatsAppNormalizer
+from deilebot.providers.whatsapp.settings import (WHATSAPP_CAPABILITIES,
                                                    WhatsAppSettings)
 
 
@@ -72,7 +72,7 @@ class TestAdapter:
 
     async def test_edit_unsupported(self):
         a = WhatsAppAdapter(WhatsAppSettings(access_token=SecretStr("t"), phone_number_id="100"))
-        from deile_bot._testing import make_channel
+        from deilebot._testing import make_channel
 
         with pytest.raises(CapabilityNotSupported):
             await a.edit_message(make_channel(), "x", "new")

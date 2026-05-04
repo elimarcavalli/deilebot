@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deile_bot.runtime.scheduler import CronJob, Scheduler
+from deilebot.runtime.scheduler import CronJob, Scheduler
 
 
 class TestSchedulerLoading:

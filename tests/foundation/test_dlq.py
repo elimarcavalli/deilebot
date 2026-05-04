@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot.foundation.conversation_store import ConversationStore
-from deile_bot.foundation.dlq import DeadLetterQueue
-from deile_bot.foundation.exceptions import DLQError
-from deile_bot.foundation.settings import BotSettings
+from deilebot.foundation.conversation_store import ConversationStore
+from deilebot.foundation.dlq import DeadLetterQueue
+from deilebot.foundation.exceptions import DLQError
+from deilebot.foundation.settings import BotSettings
 
 
 @pytest.fixture

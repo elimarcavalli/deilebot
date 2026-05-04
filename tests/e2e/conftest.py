@@ -11,23 +11,23 @@ import os
 
 import pytest
 
-from deile_bot._testing import FakeAgentMetaProvider, FakeProviderAdapter
-from deile_bot.foundation.agent_bridge import (AgentBridge, AgentInvocation,
+from deilebot._testing import FakeAgentMetaProvider, FakeProviderAdapter
+from deilebot.foundation.agent_bridge import (AgentBridge, AgentInvocation,
                                                AgentResponse)
-from deile_bot.foundation.audit import BotAuditLogger
-from deile_bot.foundation.capabilities import CapabilityCatalog
-from deile_bot.foundation.conversation_store import ConversationStore
-from deile_bot.foundation.dlq import DeadLetterQueue
-from deile_bot.foundation.event_bus import BotEventBus
-from deile_bot.foundation.identity import IdentityResolver
-from deile_bot.foundation.intent import HeuristicIntentClassifier
-from deile_bot.foundation.metrics import MetricsCollector
-from deile_bot.foundation.output_formatter import PlainTextFormatter
-from deile_bot.foundation.permissions import PermissionGate
-from deile_bot.foundation.persona_selector import PersonaSelector
-from deile_bot.foundation.pipeline import EgressPipeline, IngressPipeline
-from deile_bot.foundation.rate_limit import RateLimiter
-from deile_bot.foundation.settings import BotSettings
+from deilebot.foundation.audit import BotAuditLogger
+from deilebot.foundation.capabilities import CapabilityCatalog
+from deilebot.foundation.conversation_store import ConversationStore
+from deilebot.foundation.dlq import DeadLetterQueue
+from deilebot.foundation.event_bus import BotEventBus
+from deilebot.foundation.identity import IdentityResolver
+from deilebot.foundation.intent import HeuristicIntentClassifier
+from deilebot.foundation.metrics import MetricsCollector
+from deilebot.foundation.output_formatter import PlainTextFormatter
+from deilebot.foundation.permissions import PermissionGate
+from deilebot.foundation.persona_selector import PersonaSelector
+from deilebot.foundation.pipeline import EgressPipeline, IngressPipeline
+from deilebot.foundation.rate_limit import RateLimiter
+from deilebot.foundation.settings import BotSettings
 
 
 class CapturingFakeBridge(AgentBridge):

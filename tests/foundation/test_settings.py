@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot.foundation.settings import (FoundationSettings,
+from deilebot.foundation.settings import (FoundationSettings,
                                            get_bot_settings,
                                            reset_bot_settings_cache)
 
@@ -62,7 +62,7 @@ class TestGetBotSettings:
 
 
 class TestNoProvidersImportInFoundation:
-    """Sanity: foundation must not import deile_bot.providers (F6)."""
+    """Sanity: foundation must not import deilebot.providers (F6)."""
 
     def test_no_provider_imports(self):
         import pathlib
@@ -70,4 +70,4 @@ class TestNoProvidersImportInFoundation:
         foundation_dir = pathlib.Path(__file__).parent.parent.parent / "foundation"
         for py in foundation_dir.rglob("*.py"):
             text = py.read_text(encoding="utf-8")
-            assert "from deile_bot.providers" not in text, f"{py} imports providers"
+            assert "from deilebot.providers" not in text, f"{py} imports providers"

@@ -5,12 +5,12 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+from deilebot.foundation.exceptions import (CapabilityNotSupported,
                                              ProviderError)
-from deile_bot.providers.meta._common.settings import MetaCommonSettings
-from deile_bot.providers.meta.instagram.adapter import (INSTAGRAM_CAPABILITIES,
+from deilebot.providers.meta._common.settings import MetaCommonSettings
+from deilebot.providers.meta.instagram.adapter import (INSTAGRAM_CAPABILITIES,
                                                         InstagramAdapter)
-from deile_bot.providers.meta.messenger.adapter import (MESSENGER_CAPABILITIES,
+from deilebot.providers.meta.messenger.adapter import (MESSENGER_CAPABILITIES,
                                                         MessengerAdapter)
 
 
@@ -48,7 +48,7 @@ class TestMessenger:
 
     async def test_edit_unsupported(self):
         a = MessengerAdapter(MetaCommonSettings(page_access_token=SecretStr("t"), page_id="999"))
-        from deile_bot._testing import make_channel
+        from deilebot._testing import make_channel
 
         with pytest.raises(CapabilityNotSupported):
             await a.edit_message(make_channel(), "x", "y")

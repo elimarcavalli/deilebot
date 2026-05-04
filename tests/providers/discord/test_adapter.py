@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from deile_bot.foundation.envelope import AttachmentKind
-from deile_bot.foundation.exceptions import ProviderError
-from deile_bot.providers.discord.adapter import DiscordAdapter
-from deile_bot.providers.discord.settings import (DISCORD_CAPABILITIES,
+from deilebot.foundation.envelope import AttachmentKind
+from deilebot.foundation.exceptions import ProviderError
+from deilebot.providers.discord.adapter import DiscordAdapter
+from deilebot.providers.discord.settings import (DISCORD_CAPABILITIES,
                                                   DiscordBotSettings)
 
 
@@ -26,7 +26,7 @@ class TestAdapter:
             await adapter.start()
 
     async def test_send_without_start_raises(self):
-        from deile_bot._testing import make_channel
+        from deilebot._testing import make_channel
 
         adapter = DiscordAdapter(DiscordBotSettings(token=SecretStr("x")))
         with pytest.raises(ProviderError):

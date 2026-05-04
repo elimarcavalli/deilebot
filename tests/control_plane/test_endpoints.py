@@ -1,4 +1,4 @@
-"""End-to-end checks for the deile-bot control-plane server.
+"""End-to-end checks for the deilebot control-plane server.
 
 We boot the *real* `ControlPlaneServer` against a fake provider adapter
 and exercise it through the *real* `BotControlClient`. The fake adapter
@@ -8,12 +8,12 @@ only stubs the few methods the routes call.
 from __future__ import annotations
 
 import pytest
-from deile_bot_client import (BotClientAuthError, BotControlClient,
+from deilebot_client import (BotClientAuthError, BotControlClient,
                               BotControlSettings)
 
-from deile_bot.foundation.capabilities import ProviderCapabilities
-from deile_bot.foundation.envelope import AttachmentKind
-from deile_bot.runtime.control_plane import (ControlPlaneServer,
+from deilebot.foundation.capabilities import ProviderCapabilities
+from deilebot.foundation.envelope import AttachmentKind
+from deilebot.runtime.control_plane import (ControlPlaneServer,
                                              ControlPlaneSettings)
 
 

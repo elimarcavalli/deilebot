@@ -3,8 +3,8 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "deile-bot"
-version = "0.1.0"
+name = "deilebot"
+version = "0.2.0"
 description = "DEILE instant-messaging bot daemon (Discord/Telegram/WhatsApp/Meta) + control-plane HTTP API"
 authors = [{ name = "elimarcavalli" }]
 readme = "README.md"
@@ -35,8 +35,8 @@ all-bots = [
 client = ["httpx>=0.25", "tenacity>=8.0", "pydantic>=2.0", "pydantic-settings>=2.0"]
 
 [project.scripts]
-deile-bot = "deile_bot.cli:main"
+deilebot = "deilebot.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["deile_bot*", "deile_bot_client*"]
+include = ["deilebot*", "deilebot_client*"]
 exclude = ["tests*", "PATCHES*", "PLANS*", "RUNS*", "logs*"]

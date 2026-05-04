@@ -1,7 +1,7 @@
 """Adversarial tests — covers the ADV-* scenarios listed in:
 
-- docs/future/deile-bot/foundation/05-FASE-REVISAO-CETICA.md §3 (ADV-1..ADV-15)
-- docs/future/deile-bot/discord/06-FASE-REVISAO-CETICA.md §3 (ADV-D1..ADV-D15)
+- docs/future/deilebot/foundation/05-FASE-REVISAO-CETICA.md §3 (ADV-1..ADV-15)
+- docs/future/deilebot/discord/06-FASE-REVISAO-CETICA.md §3 (ADV-D1..ADV-D15)
 - docs/future/deile/05-FASE-REVISAO-CETICA.md §2 (ADV-1..ADV-10)
 
 Live-only ADV-D5/ADV-D7/ADV-D8/ADV-D15 are skipped (require real Discord
@@ -17,24 +17,24 @@ from datetime import datetime, timezone
 
 import pytest
 
-from deile_bot._testing import (FakeAgentMetaProvider, FakeProviderAdapter,
+from deilebot._testing import (FakeAgentMetaProvider, FakeProviderAdapter,
                                 make_channel, make_envelope, make_user)
-from deile_bot.foundation.audit import BotAuditLogger
-from deile_bot.foundation.capabilities import CapabilityCatalog
-from deile_bot.foundation.conversation_store import ConversationStore
-from deile_bot.foundation.dlq import DeadLetterQueue
-from deile_bot.foundation.envelope import ChannelScope
-from deile_bot.foundation.event_bus import BotEventBus
-from deile_bot.foundation.exceptions import AgentInvocationError, ProviderError
-from deile_bot.foundation.identity import IdentityResolver
-from deile_bot.foundation.intent import HeuristicIntentClassifier
-from deile_bot.foundation.metrics import MetricsCollector
-from deile_bot.foundation.output_formatter import PlainTextFormatter
-from deile_bot.foundation.permissions import Action, PermissionGate
-from deile_bot.foundation.persona_selector import PersonaSelector
-from deile_bot.foundation.pipeline import EgressPipeline, IngressPipeline
-from deile_bot.foundation.rate_limit import RateLimiter
-from deile_bot.foundation.settings import (BotSettings, FoundationSettings,
+from deilebot.foundation.audit import BotAuditLogger
+from deilebot.foundation.capabilities import CapabilityCatalog
+from deilebot.foundation.conversation_store import ConversationStore
+from deilebot.foundation.dlq import DeadLetterQueue
+from deilebot.foundation.envelope import ChannelScope
+from deilebot.foundation.event_bus import BotEventBus
+from deilebot.foundation.exceptions import AgentInvocationError, ProviderError
+from deilebot.foundation.identity import IdentityResolver
+from deilebot.foundation.intent import HeuristicIntentClassifier
+from deilebot.foundation.metrics import MetricsCollector
+from deilebot.foundation.output_formatter import PlainTextFormatter
+from deilebot.foundation.permissions import Action, PermissionGate
+from deilebot.foundation.persona_selector import PersonaSelector
+from deilebot.foundation.pipeline import EgressPipeline, IngressPipeline
+from deilebot.foundation.rate_limit import RateLimiter
+from deilebot.foundation.settings import (BotSettings, FoundationSettings,
                                            PermissionsSettings, PersonaRule,
                                            PersonaSettings)
 
@@ -87,7 +87,7 @@ def _build_pipeline(store_, settings_, bridge_, *, adapter=None):
 class _CapturingBridge:
     def __init__(self, response_text="resposta de teste — pelo menos 50 chars assim ok."):
         from deile.common.markup_ast import MarkupAST
-        from deile_bot.foundation.agent_bridge import AgentResponse
+        from deilebot.foundation.agent_bridge import AgentResponse
         self.invocations = []
         self.response_text = response_text
         self._AgentResponse = AgentResponse
@@ -118,7 +118,7 @@ class TestFoundationADV:
 
     # ADV-1, ADV-2 covered in test_envelope.py — keeping a smoke here too.
     def test_adv1_empty_message_id_rejected(self):
-        from deile_bot.foundation.envelope import MessageEnvelope
+        from deilebot.foundation.envelope import MessageEnvelope
         with pytest.raises(ValueError):
             MessageEnvelope(
                 message_id="",
@@ -375,7 +375,7 @@ class TestDiscordADV:
 
     async def test_advd10_reaction_by_bot_itself_ignored(self):
         """Reaction triggered by the BOT user itself must be skipped (no handle())."""
-        from deile_bot.providers.discord.cogs.reaction_cog import ReactionCog
+        from deilebot.providers.discord.cogs.reaction_cog import ReactionCog
 
         called = []
 
@@ -407,7 +407,7 @@ class TestDiscordADV:
 
     async def test_advd10_cooldown_blocks_repeat_within_30s(self):
         """50 reactions within 30s from same user/channel → only first triggers."""
-        from deile_bot.providers.discord.cogs.reaction_cog import ReactionCog
+        from deilebot.providers.discord.cogs.reaction_cog import ReactionCog
 
         class DummyBot:
             user = type("U", (), {"id": 999})()
@@ -455,7 +455,7 @@ class TestDiscordADV:
     async def test_advd12_send_dm_unknown_user_returns_failure(self, store):
         """send_dm tool with bot_user_id not in store → ok=False, error=user_not_found."""
         from deile.tools.base import ToolContext
-        from deile_bot.foundation.tools.send_dm import SendDMTool
+        from deilebot.foundation.tools.send_dm import SendDMTool
 
         adapter = FakeProviderAdapter()
         identity = IdentityResolver(store)
@@ -476,7 +476,7 @@ class TestDiscordADV:
             },
         )
         # Add SEND_DM permission rule for invoker (else PermissionDenied raised)
-        from deile_bot.foundation.settings import PermissionRule
+        from deilebot.foundation.settings import PermissionRule
         settings.permissions.per_action["SEND_DM"] = PermissionRule(
             mode="allowlist", list=[invoker.bot_user_id]
         )
@@ -486,7 +486,7 @@ class TestDiscordADV:
 
     def test_advd14_split_codeblock_aware(self):
         """Discord OutputFormatter.split must not break ``` fences."""
-        from deile_bot.providers.discord.formatter import \
+        from deilebot.providers.discord.formatter import \
             DiscordOutputFormatter
 
         fmt = DiscordOutputFormatter()
@@ -624,7 +624,7 @@ class TestCrossCuttingF9toF12:
         import io
         import logging
 
-        from deile_bot.foundation.logging import get_logger
+        from deilebot.foundation.logging import get_logger
 
         log = get_logger("test_adv_f9")
         log.setLevel(logging.INFO)
@@ -655,9 +655,9 @@ class TestCrossCuttingF9toF12:
         """All credential settings are SecretStr, not plain str."""
         from pydantic import SecretStr
 
-        from deile_bot.providers.discord.settings import DiscordBotSettings
-        from deile_bot.providers.telegram.settings import TelegramBotSettings
-        from deile_bot.providers.whatsapp.settings import WhatsAppSettings
+        from deilebot.providers.discord.settings import DiscordBotSettings
+        from deilebot.providers.telegram.settings import TelegramBotSettings
+        from deilebot.providers.whatsapp.settings import WhatsAppSettings
 
         # Discord
         d = DiscordBotSettings(token="t" * 50)
@@ -675,7 +675,7 @@ class TestCrossCuttingF9toF12:
 
     def test_f12_settings_singleton_can_reset(self, monkeypatch):
         """Settings cache can be reset (hot-reload prerequisite)."""
-        from deile_bot.foundation.settings import (get_bot_settings,
+        from deilebot.foundation.settings import (get_bot_settings,
                                                    reset_bot_settings_cache)
 
         a = get_bot_settings()

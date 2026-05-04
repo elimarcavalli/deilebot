@@ -1,10 +1,10 @@
-"""Tests for the deile_bot CLI parser."""
+"""Tests for the deilebot CLI parser."""
 
 from __future__ import annotations
 
 import pytest
 
-from deile_bot.cli import _build_parser
+from deilebot.cli import _build_parser
 
 
 class TestParser:

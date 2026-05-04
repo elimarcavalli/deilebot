@@ -1,8 +1,8 @@
-# 🤖 deile-bot
+# 🤖 deilebot
 
 > Um runtime unificado e agnóstico de provedor para assistentes de Inteligência Artificial baseados no ecossistema Deile.
 
-O **deile-bot** é o componente de execução de ponta que conecta canais de mensageria (Discord, Telegram, WhatsApp, Meta) ao poderoso `DeileAgent`. Ele gerencia nativamente todo o ciclo de vida da mensagem: recepção, permissões, limites de requisição (rate limiting), classificação de intenção (intent) e invocação do cérebro da IA.
+O **deilebot** é o componente de execução de ponta que conecta canais de mensageria (Discord, Telegram, WhatsApp, Meta) ao poderoso `DeileAgent`. Ele gerencia nativamente todo o ciclo de vida da mensagem: recepção, permissões, limites de requisição (rate limiting), classificação de intenção (intent) e invocação do cérebro da IA.
 
 ---
 
@@ -25,14 +25,14 @@ Este projeto está em desenvolvimento contínuo. A tabela abaixo reflete **com e
 
 ## 🧠 Como o Bot chama o "Deile" (Invocação do Agente)
 
-Um dos maiores diferenciais do `deile-bot` é que ele **não fala diretamente com as APIs de LLM** (como OpenAI ou Anthropic). O bot age como uma **Ponte e um Classificador Inteligente** que prepara o terreno perfeito antes de invocar o `DeileAgent` — o verdadeiro cérebro da operação.
+Um dos maiores diferenciais do `deilebot` é que ele **não fala diretamente com as APIs de LLM** (como OpenAI ou Anthropic). O bot age como uma **Ponte e um Classificador Inteligente** que prepara o terreno perfeito antes de invocar o `DeileAgent` — o verdadeiro cérebro da operação.
 
 A comunicação padrão ocorre dentro do próprio processo (modo `in_process`) através de um `InProcessAgentBridge` assíncrono. Existe também um modo alternativo `oneshot_subprocess` que executa o `DeileAgent` em um subprocesso isolado. Veja como funciona o fluxo principal:
 
 ```mermaid
 sequenceDiagram
     participant User as 👤 Usuário
-    participant Bot as 🤖 deile-bot (Ingress)
+    participant Bot as 🤖 deilebot (Ingress)
     participant Bridge as 🌉 Agent Bridge
     participant Deile as 🧠 DeileAgent (core)
 
@@ -58,7 +58,7 @@ sequenceDiagram
 ```
 
 ### O que vai na invocação (`AgentInvocation`)?
-Quando o `deile-bot` invoca o `DeileAgent`, ele não passa apenas um texto. Ele empacota um dataclass `AgentInvocation` com campos ricos:
+Quando o `deilebot` invoca o `DeileAgent`, ele não passa apenas um texto. Ele empacota um dataclass `AgentInvocation` com campos ricos:
 - **`history`:** As últimas 40 mensagens daquele canal (memória de curto-prazo via SQLite).
 - **`capabilities`:** Um `CapabilitySnapshot` que informa ao `DeileAgent` o que ele pode fazer naquele provedor (ex: `can_react=True`, `can_threads=True`, `max_message_chars=2000`).
 - **`persona`:** O nome da persona contextual selecionada (ex: `developer`, configurável via `persona_config.yaml`).
@@ -72,7 +72,7 @@ Quando o `deile-bot` invoca o `DeileAgent`, ele não passa apenas um texto. Ele 
 
 ## 🔄 Fluxo Completo de Vida da Mensagem (Pipeline)
 
-O `deile-bot` utiliza uma arquitetura de dutos estritos (Pipelines) para tratar o tráfego que entra (Ingress) e o que sai (Egress).
+O `deilebot` utiliza uma arquitetura de dutos estritos (Pipelines) para tratar o tráfego que entra (Ingress) e o que sai (Egress).
 
 ```mermaid
 flowchart TD
@@ -121,7 +121,7 @@ git clone https://github.com/elimarcavalli/deile.git
 cd deile
 
 # 2. Clone o repositório do bot para dentro da pasta do core
-git clone https://github.com/elimarcavalli/deile-bot.git deile_bot
+git clone https://github.com/elimarcavalli/deilebot.git deilebot
 
 # 3. Crie e ative um ambiente virtual
 python -m venv .venv
@@ -142,13 +142,13 @@ export DEILE_BOT_DISCORD_TOKEN="seu_token_do_discord_aqui"
 export OPENAI_API_KEY="sua_chave_openai_aqui"
 ```
 
-> **⚠️ Importante:** O `deile-bot` usa o prefixo `DEILE_BOT_DISCORD_` nativamente para configurações do Discord via variáveis de ambiente. As chaves de LLM (como `OPENAI_API_KEY`) são consumidas pelo `DeileAgent` core.
+> **⚠️ Importante:** O `deilebot` usa o prefixo `DEILE_BOT_DISCORD_` nativamente para configurações do Discord via variáveis de ambiente. As chaves de LLM (como `OPENAI_API_KEY`) são consumidas pelo `DeileAgent` core.
 
 ### Rodando o Bot
 No momento atual do projeto, execute usando o provedor do Discord:
 
 ```bash
-python -m deile_bot run --provider discord
+python -m deilebot run --provider discord
 ```
 
 *(O bot sincronizará automaticamente seus comandos Slash e começará a ouvir as requisições, validando as intenções antes de chamar o `DeileAgent`.)*
@@ -161,14 +161,14 @@ O ponto de entrada `cli.py` possui utilitários avançados de manutenção:
 
 | Comando | Descrição |
 | :--- | :--- |
-| `python -m deile_bot run --provider discord` | Inicia o runtime de um provedor específico. |
-| `python -m deile_bot dlq list` | Lista todas as mensagens que falharam repetidamente e estão na Dead-Letter Queue. |
-| `python -m deile_bot dlq purge --older-than-days 30` | Limpa registros antigos da DLQ. |
-| `python -m deile_bot sessions list` | Lista todas as sessões armazenadas. |
-| `python -m deile_bot sessions purge --older-than-days 30` | Limpa sessões inativas do banco de dados. |
-| `python -m deile_bot metrics` | Printa um snapshot de contadores de métricas (sem runtime ativo, retorna zerado). |
-| `python -m deile_bot persona list` | Lista todas as personas reconhecidas pelo `PersonaManager`. |
-| `python -m deile_bot migrate-memory-json --source <path>` | Migra um `memory.json` legado para o SQLite. |
+| `python -m deilebot run --provider discord` | Inicia o runtime de um provedor específico. |
+| `python -m deilebot dlq list` | Lista todas as mensagens que falharam repetidamente e estão na Dead-Letter Queue. |
+| `python -m deilebot dlq purge --older-than-days 30` | Limpa registros antigos da DLQ. |
+| `python -m deilebot sessions list` | Lista todas as sessões armazenadas. |
+| `python -m deilebot sessions purge --older-than-days 30` | Limpa sessões inativas do banco de dados. |
+| `python -m deilebot metrics` | Printa um snapshot de contadores de métricas (sem runtime ativo, retorna zerado). |
+| `python -m deilebot persona list` | Lista todas as personas reconhecidas pelo `PersonaManager`. |
+| `python -m deilebot migrate-memory-json --source <path>` | Migra um `memory.json` legado para o SQLite. |
 
 ---
 

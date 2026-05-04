@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot._testing import make_channel, make_user
-from deile_bot.foundation.audit import AuditEventType, BotAuditLogger
-from deile_bot.foundation.conversation_store import ConversationStore
+from deilebot._testing import make_channel, make_user
+from deilebot.foundation.audit import AuditEventType, BotAuditLogger
+from deilebot.foundation.conversation_store import ConversationStore
 
 
 @pytest.fixture

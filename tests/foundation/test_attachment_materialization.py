@@ -21,8 +21,8 @@ from typing import AsyncIterator, Tuple
 import pytest
 from aiohttp import web
 
-from deile_bot.foundation.envelope import Attachment, AttachmentKind
-from deile_bot.foundation.pipeline import IngressPipeline
+from deilebot.foundation.envelope import Attachment, AttachmentKind
+from deilebot.foundation.pipeline import IngressPipeline
 
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="

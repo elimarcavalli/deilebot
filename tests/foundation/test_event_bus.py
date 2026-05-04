@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deile_bot.foundation.event_bus import BotEventBus, BotEventType
+from deilebot.foundation.event_bus import BotEventBus, BotEventType
 
 
 class FakeBus:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot.runtime.webhook_router import WebhookRouter
+from deilebot.runtime.webhook_router import WebhookRouter
 
 
 class TestRouter:

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot._testing import make_user
-from deile_bot.foundation.conversation_store import ConversationStore
-from deile_bot.foundation.envelope import ChannelScope
-from deile_bot.foundation.identity import IdentityResolver
-from deile_bot.foundation.permissions import Action, PermissionGate
-from deile_bot.foundation.settings import (BotSettings, PermissionRule,
+from deilebot._testing import make_user
+from deilebot.foundation.conversation_store import ConversationStore
+from deilebot.foundation.envelope import ChannelScope
+from deilebot.foundation.identity import IdentityResolver
+from deilebot.foundation.permissions import Action, PermissionGate
+from deilebot.foundation.settings import (BotSettings, PermissionRule,
                                            PermissionsSettings)
 
 

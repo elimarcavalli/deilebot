@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot.foundation.conversation_store import ConversationStore
-from deile_bot.foundation.identity import IdentityResolver, _generate_ulid
+from deilebot.foundation.conversation_store import ConversationStore
+from deilebot.foundation.identity import IdentityResolver, _generate_ulid
 
 
 @pytest.fixture

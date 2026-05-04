@@ -4,30 +4,30 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot._testing import (FakeAgentMetaProvider, FakeProviderAdapter,
+from deilebot._testing import (FakeAgentMetaProvider, FakeProviderAdapter,
                                 make_envelope)
-from deile_bot.foundation.audit import BotAuditLogger
-from deile_bot.foundation.capabilities import CapabilityCatalog
-from deile_bot.foundation.conversation_store import ConversationStore
-from deile_bot.foundation.dlq import DeadLetterQueue
-from deile_bot.foundation.event_bus import BotEventBus
-from deile_bot.foundation.identity import IdentityResolver
-from deile_bot.foundation.intent import HeuristicIntentClassifier
-from deile_bot.foundation.metrics import MetricsCollector
-from deile_bot.foundation.output_formatter import PlainTextFormatter
-from deile_bot.foundation.permissions import PermissionGate
-from deile_bot.foundation.persona_selector import PersonaSelector
-from deile_bot.foundation.pipeline import EgressPipeline, IngressPipeline
-from deile_bot.foundation.rate_limit import RateLimiter
-from deile_bot.foundation.settings import BotSettings
-from deile_bot.runtime.single_runtime import (MultiProviderRuntime,
+from deilebot.foundation.audit import BotAuditLogger
+from deilebot.foundation.capabilities import CapabilityCatalog
+from deilebot.foundation.conversation_store import ConversationStore
+from deilebot.foundation.dlq import DeadLetterQueue
+from deilebot.foundation.event_bus import BotEventBus
+from deilebot.foundation.identity import IdentityResolver
+from deilebot.foundation.intent import HeuristicIntentClassifier
+from deilebot.foundation.metrics import MetricsCollector
+from deilebot.foundation.output_formatter import PlainTextFormatter
+from deilebot.foundation.permissions import PermissionGate
+from deilebot.foundation.persona_selector import PersonaSelector
+from deilebot.foundation.pipeline import EgressPipeline, IngressPipeline
+from deilebot.foundation.rate_limit import RateLimiter
+from deilebot.foundation.settings import BotSettings
+from deilebot.runtime.single_runtime import (MultiProviderRuntime,
                                               SingleProviderRuntime)
 
 
 class _FakeBridge:
     async def invoke(self, inv):
         from deile.common.markup_ast import MarkupAST
-        from deile_bot.foundation.agent_bridge import AgentResponse
+        from deilebot.foundation.agent_bridge import AgentResponse
         return AgentResponse(
             text="hello back from fake bridge with enough chars",
             markup=MarkupAST.from_plain("hello back"),
@@ -83,8 +83,8 @@ class TestSingleProviderRuntime:
         rt = SingleProviderRuntime(adapter, pipeline)
         await rt.start()
         try:
-            from deile_bot._testing import make_channel, make_user
-            from deile_bot.foundation.envelope import ChannelScope
+            from deilebot._testing import make_channel, make_user
+            from deilebot.foundation.envelope import ChannelScope
             env = make_envelope(
                 text="oi tudo bem amigo",
                 author=make_user(),
@@ -147,8 +147,8 @@ class TestSingleProviderRuntime:
         rt = SingleProviderRuntime(adapter, _FailingPipeline())
         await rt.start()
         try:
-            from deile_bot._testing import make_channel
-            from deile_bot.foundation.envelope import ChannelScope
+            from deilebot._testing import make_channel
+            from deilebot.foundation.envelope import ChannelScope
             env = make_envelope(channel=make_channel(scope=ChannelScope.DM))
             # Should NOT raise
             await adapter.inject(env)

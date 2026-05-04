@@ -16,7 +16,7 @@ class _FakeChannel:
 
 class TestAgentCogEnvelopeShape:
     def test_force_respond_set(self):
-        from deile_bot.providers.discord.cogs.agent_cog import AgentCog
+        from deilebot.providers.discord.cogs.agent_cog import AgentCog
 
         cog = AgentCog.__new__(AgentCog)
         cog.bot = None
