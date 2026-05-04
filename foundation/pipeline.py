@@ -317,6 +317,32 @@ class IngressPipeline:
         # 9. capability snapshot + extra prompt
         snap = await self.capability_catalog.snapshot(adapter, self.agent_meta)
         extra = self.capability_catalog.render_for_system_prompt(snap)
+        # Append a <bot_context> block so the LLM (not just the tools) can
+        # see channel/owner info and — critically — inbound attachments.
+        # Without this the agent sees the attachments only via tool ctx,
+        # which it never inspects unless prompted; the persona instruction
+        # to "look at bot_context.attachments" only works if the LLM
+        # actually has bot_context in its prompt.
+        ctx_lines = [
+            "<bot_context>",
+            f"provider: {provider}",
+            f"channel_scope: {scope}",
+            f"channel_id: {env.channel.provider_channel_id}",
+            f"channel_name: {env.channel.name or '-'}",
+            f"is_owner: {is_owner}",
+            f"persona: {persona}",
+        ]
+        if env.attachments:
+            ctx_lines.append("attachments:")
+            for att in env.attachments:
+                kind_str = att.kind.value if hasattr(att.kind, "value") else str(att.kind)
+                ctx_lines.append(
+                    f"  - kind={kind_str} mime={att.mime or '?'} "
+                    f"filename={att.filename or '?'} url={att.url or '-'} "
+                    f"size_bytes={att.size_bytes or 0}"
+                )
+        ctx_lines.append("</bot_context>")
+        extra = extra + "\n\n" + "\n".join(ctx_lines)
         bot_settings = get_bot_settings().foundation
         # 10. agent invoke
         inv = AgentInvocation(
@@ -336,6 +362,20 @@ class IngressPipeline:
                 "channel_name": env.channel.name,
                 "is_owner": is_owner,
                 "persona": persona,
+                # Surface inbound attachments so the agent can call
+                # vision_describe_image (or similar) on URLs without
+                # the agent having to ask. Discord CDN URLs are public,
+                # no auth required to download.
+                "attachments": [
+                    {
+                        "kind": att.kind.value if hasattr(att.kind, "value") else str(att.kind),
+                        "url": att.url,
+                        "mime": att.mime,
+                        "filename": att.filename,
+                        "size_bytes": att.size_bytes,
+                    }
+                    for att in env.attachments
+                ],
             },
             timeout_seconds=bot_settings.agent_invocation_timeout_seconds,
         )
