@@ -8,15 +8,13 @@ only stubs the few methods the routes call.
 from __future__ import annotations
 
 import pytest
+from deile_bot_client import (BotClientAuthError, BotControlClient,
+                              BotControlSettings)
 
 from deile_bot.foundation.capabilities import ProviderCapabilities
 from deile_bot.foundation.envelope import AttachmentKind
-from deile_bot.runtime.control_plane import ControlPlaneServer, ControlPlaneSettings
-from deile_bot_client import (
-    BotClientAuthError,
-    BotControlClient,
-    BotControlSettings,
-)
+from deile_bot.runtime.control_plane import (ControlPlaneServer,
+                                             ControlPlaneSettings)
 
 
 class FakeAdapter:
