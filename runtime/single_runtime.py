@@ -55,12 +55,22 @@ class SingleProviderRuntime:
         await self.adapter.start()
 
     async def stop(self) -> None:
-        await self.adapter.stop()
+        # Both adapter.stop() and control_plane.stop() must be attempted even
+        # if one raises — otherwise a hung adapter would leak the control-plane
+        # port (orphan socket on 127.0.0.1) until the process dies.
+        adapter_exc: Optional[BaseException] = None
+        try:
+            await self.adapter.stop()
+        except Exception as exc:
+            adapter_exc = exc
+            self._logger.exception("adapter.stop raised; continuing to stop control_plane")
         if self.control_plane is not None:
             try:
                 await self.control_plane.stop()
             except Exception:
                 self._logger.exception("control_plane stop failed")
+        if adapter_exc is not None:
+            raise adapter_exc
 
 
 class MultiProviderRuntime:
