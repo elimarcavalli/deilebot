@@ -86,12 +86,16 @@ class DiscordAdapter(ProviderAdapter):
                     from deilebot.providers.discord.cogs.reaction_cog import \
                         ReactionCog
 
+                    from deilebot.providers.discord.cogs.idea_cog import IdeaCog
+
                     if "AgentCog" not in cog_names:
                         await client.add_cog(AgentCog(client, self.runtime, self))
                     if "CapabilitiesCog" not in cog_names:
                         await client.add_cog(CapabilitiesCog(client, self.runtime, self))
                     if "ReactionCog" not in cog_names:
                         await client.add_cog(ReactionCog(client, self.runtime, self))
+                    if "IdeaCog" not in cog_names:
+                        await client.add_cog(IdeaCog(client, self.runtime, self))
                 if self.settings.slash_sync_guild_ids:
                     for gid in self.settings.slash_sync_guild_ids:
                         await client.tree.sync(guild=discord.Object(id=gid))
