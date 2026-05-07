@@ -60,6 +60,51 @@ class WhatsAppApiClient:
             },
         })
 
+    @property
+    def _media_url(self) -> str:
+        return f"https://graph.facebook.com/{self._version}/{self._phone_id}/media"
+
+    async def upload_media(self, content: bytes, mime_type: str) -> str:
+        """Upload raw bytes to the WhatsApp media endpoint; returns media_id."""
+        client = await self._get_client()
+        try:
+            r = await client.post(
+                self._media_url,
+                headers={"Authorization": f"Bearer {self._token}"},
+                files={"file": ("upload", content, mime_type)},
+                data={"messaging_product": "whatsapp"},
+            )
+            r.raise_for_status()
+            return str(r.json().get("id", ""))
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"whatsapp media upload failed: {e}", context={}) from e
+
+    async def get_media_url(self, media_id: str) -> str:
+        """Resolve a media_id to its temporary download URL."""
+        client = await self._get_client()
+        try:
+            r = await client.get(
+                f"https://graph.facebook.com/{self._version}/{media_id}",
+                headers={"Authorization": f"Bearer {self._token}"},
+            )
+            r.raise_for_status()
+            return str(r.json().get("url", ""))
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"whatsapp get_media_url failed: {e}", context={}) from e
+
+    async def download_media_bytes(self, media_url: str) -> bytes:
+        """Download media content from the temporary URL returned by get_media_url."""
+        client = await self._get_client()
+        try:
+            r = await client.get(
+                media_url,
+                headers={"Authorization": f"Bearer {self._token}"},
+            )
+            r.raise_for_status()
+            return r.content
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"whatsapp download_media_bytes failed: {e}", context={}) from e
+
     async def _post(self, payload: Mapping[str, Any]) -> str:
         client = await self._get_client()
         try:
