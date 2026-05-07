@@ -33,6 +33,7 @@ all-bots = [
     "httpx>=0.25",
 ]
 client = ["httpx>=0.25", "tenacity>=8.0", "pydantic>=2.0", "pydantic-settings>=2.0"]
+test = ["pytest>=7", "pytest-asyncio>=0.23", "pytest-aiohttp>=1.0", "httpx>=0.25"]
 
 [project.scripts]
 deilebot = "deilebot.cli:main"
