@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import SecretStr
 
 try:
@@ -44,6 +46,7 @@ class WhatsAppSettings(BaseSettings):
     phone_number_id: str = ""
     business_account_id: str = ""
     verify_token: SecretStr = SecretStr("")
+    app_secret: Optional[SecretStr] = None
     api_version: str = "v22.0"
     self_user_id: str = ""
 

@@ -47,7 +47,7 @@ class WhatsAppApiClient:
     def _media_url(self) -> str:
         return f"https://graph.facebook.com/{self._version}/{self._phone_id}/media"
 
-    async def _get_client(self):
+    async def _get_client(self) -> Any:
         if self._client is None:
             try:
                 import httpx
@@ -158,7 +158,15 @@ class WhatsAppApiClient:
             )
             r.raise_for_status()
             data = r.json()
-            return str((data.get("messages") or [{}])[0].get("id", ""))
+            msg_id = (data.get("messages") or [{}])[0].get("id")
+            if not msg_id:
+                raise ProviderError(
+                    "whatsapp send: missing message 'id' in response",
+                    context={"response_body": str(data)[:200]},
+                )
+            return str(msg_id)
+        except ProviderError:
+            raise
         except Exception as e:  # noqa: BLE001
             raise ProviderError(
                 f"whatsapp send failed: HTTP {_http_status(e)}",
