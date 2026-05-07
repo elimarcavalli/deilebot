@@ -330,3 +330,53 @@ class TestWhatsAppMedia:
         media = WhatsAppMedia(self._mock_client())
         data = await media.download("https://example.com/media/abc")
         assert data == b"\xff\xd8\xff"
+
+
+# ---------------------------------------------------------------------------
+# TestApiClientValidation
+# ---------------------------------------------------------------------------
+
+class TestApiClientValidation:
+    """Validate that api_client raises ProviderError on missing response fields."""
+
+    async def test_upload_missing_id_raises(self):
+        from unittest.mock import patch
+
+        import httpx
+
+        from deilebot.providers.whatsapp.api_client import WhatsAppApiClient
+
+        client = WhatsAppApiClient("tok", "100")
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json = MagicMock(return_value={})  # missing "id"
+
+        with patch.object(client, "_get_client", AsyncMock(return_value=MagicMock(
+            post=AsyncMock(return_value=mock_resp)
+        ))):
+            with pytest.raises(ProviderError, match="missing 'id'"):
+                await client.upload_media(b"data", "image/jpeg")
+
+    async def test_get_media_url_missing_url_raises(self):
+        from unittest.mock import patch
+
+        from deilebot.providers.whatsapp.api_client import WhatsAppApiClient
+
+        client = WhatsAppApiClient("tok", "100")
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json = MagicMock(return_value={})  # missing "url"
+
+        with patch.object(client, "_get_client", AsyncMock(return_value=MagicMock(
+            get=AsyncMock(return_value=mock_resp)
+        ))):
+            with pytest.raises(ProviderError, match="missing 'url'"):
+                await client.get_media_url("media-id-123")
+
+    async def test_context_manager_closes_client(self):
+        from deilebot.providers.whatsapp.api_client import WhatsAppApiClient
+
+        client = WhatsAppApiClient("tok", "100")
+        async with client:
+            pass
+        assert client._client is None
