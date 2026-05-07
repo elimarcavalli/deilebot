@@ -40,3 +40,6 @@ deilebot = "deilebot.cli:main"
 [tool.setuptools.packages.find]
 include = ["deilebot*", "deilebot_client*"]
 exclude = ["tests*", "PATCHES*", "PLANS*", "RUNS*", "logs*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
