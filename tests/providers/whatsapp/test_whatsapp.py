@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
 from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
 from pydantic import SecretStr
 
@@ -27,11 +28,12 @@ from deilebot.providers.whatsapp.webhook_routes import register_routes
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def _settings(verify_token: str = "secret") -> WhatsAppSettings:
+def _settings(verify_token: str = "secret", app_secret: str | None = None) -> WhatsAppSettings:
     return WhatsAppSettings(
         access_token=SecretStr("tok"),
         phone_number_id="100",
         verify_token=SecretStr(verify_token),
+        app_secret=SecretStr(app_secret) if app_secret else None,
     )
 
 
@@ -380,3 +382,111 @@ class TestApiClientValidation:
         async with client:
             pass
         assert client._client is None
+
+    async def test_post_missing_message_id_raises(self):
+        from unittest.mock import patch
+
+        from deilebot.providers.whatsapp.api_client import WhatsAppApiClient
+
+        client = WhatsAppApiClient("tok", "100")
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json = MagicMock(return_value={"messages": [{}]})  # id absent
+
+        with patch.object(client, "_get_client", AsyncMock(return_value=MagicMock(
+            post=AsyncMock(return_value=mock_resp)
+        ))):
+            with pytest.raises(ProviderError, match="missing message 'id'"):
+                await client.send_text("5511999", "hello")
+
+    async def test_download_media_bytes_error_raises(self):
+        from unittest.mock import patch
+
+        import httpx
+
+        from deilebot.providers.whatsapp.api_client import WhatsAppApiClient
+
+        client = WhatsAppApiClient("tok", "100")
+        mock_http = MagicMock()
+        mock_http.get = AsyncMock(side_effect=Exception("connection error"))
+
+        with patch.object(client, "_get_client", AsyncMock(return_value=mock_http)):
+            with pytest.raises(ProviderError, match="download_media_bytes failed"):
+                await client.download_media_bytes("https://example.com/expired")
+
+
+# ---------------------------------------------------------------------------
+# TestWebhookSignature
+# ---------------------------------------------------------------------------
+
+class TestWebhookSignature:
+    def _make_sig(self, body: bytes, secret: str) -> str:
+        mac = hmac.new(key=secret.encode(), msg=body, digestmod=hashlib.sha256).hexdigest()
+        return f"sha256={mac}"
+
+    def _make_app_with_secret(self, secret: str = "appsecret") -> web.Application:
+        from deilebot.providers.whatsapp.adapter import WhatsAppAdapter
+        app = web.Application()
+        adapter = WhatsAppAdapter(_settings(app_secret=secret))
+        register_routes(app, adapter)
+        return app
+
+    async def test_valid_signature_passes(self, aiohttp_client):
+        body = b'{"object":"whatsapp_business_account","entry":[]}'
+        sig = self._make_sig(body, "appsecret")
+        app = self._make_app_with_secret()
+        client = await aiohttp_client(app)
+        resp = await client.post(
+            "/webhook/whatsapp",
+            data=body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig},
+        )
+        assert resp.status == 200
+
+    async def test_invalid_signature_rejected(self, aiohttp_client):
+        body = b'{"object":"whatsapp_business_account","entry":[]}'
+        app = self._make_app_with_secret()
+        client = await aiohttp_client(app)
+        resp = await client.post(
+            "/webhook/whatsapp",
+            data=body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": "sha256=deadbeef"},
+        )
+        assert resp.status == 403
+
+    async def test_missing_signature_header_rejected(self, aiohttp_client):
+        body = b'{"object":"whatsapp_business_account","entry":[]}'
+        app = self._make_app_with_secret()
+        client = await aiohttp_client(app)
+        resp = await client.post(
+            "/webhook/whatsapp",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status == 403
+
+    async def test_no_app_secret_skips_check(self, aiohttp_client):
+        """Without app_secret configured, signature check is skipped (opt-in)."""
+        from deilebot.providers.whatsapp.adapter import WhatsAppAdapter
+        app = web.Application()
+        register_routes(app, WhatsAppAdapter(_settings()))  # no app_secret
+        client = await aiohttp_client(app)
+        body = b'{"entry":[]}'
+        resp = await client.post(
+            "/webhook/whatsapp",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status == 200
+
+    async def test_empty_verify_token_rejected(self, aiohttp_client):
+        """Empty verify_token must not pass the handshake."""
+        from deilebot.providers.whatsapp.adapter import WhatsAppAdapter
+        app = web.Application()
+        register_routes(app, WhatsAppAdapter(_settings(verify_token="")))
+        client = await aiohttp_client(app)
+        resp = await client.get(
+            "/webhook/whatsapp",
+            params={"hub.mode": "subscribe", "hub.verify_token": "", "hub.challenge": "x"},
+        )
+        assert resp.status == 403
