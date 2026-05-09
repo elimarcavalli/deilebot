@@ -14,7 +14,8 @@ from typing import Any, List, Mapping, Optional, Sequence
 import aiosqlite
 
 from deilebot.foundation.envelope import (Attachment, BotUser, Channel,
-                                           ChannelScope, MessageEnvelope)
+                                           ChannelScope, ConversationWindow,
+                                           MessageEnvelope)
 from deilebot.foundation.exceptions import ConversationStoreError
 
 _SQL_DIR = Path(__file__).parent / "sql"
@@ -288,6 +289,43 @@ class ConversationStore:
                 )
             )
         return out
+
+    async def get_window(
+        self,
+        provider: str,
+        channel: Channel,
+        *,
+        window_hours: int = 24,
+    ) -> ConversationWindow:
+        """Conversation window derived from the latest inbound timestamp.
+
+        For providers that enforce a window (e.g. WhatsApp Cloud API requires
+        a template for any send beyond 24h after the last user message), this
+        is the canonical check before issuing free-text outbound.
+        """
+        db = self._require_db()
+        cursor = await db.execute(
+            """
+            SELECT sent_at FROM message
+            WHERE provider = ? AND provider_channel_id = ?
+              AND direction = 'inbound'
+            ORDER BY sent_at DESC, id DESC
+            LIMIT 1
+            """,
+            (provider, channel.provider_channel_id),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        last_inbound_at: Optional[datetime] = None
+        if row and row[0] and "T" in row[0]:
+            try:
+                last_inbound_at = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+            except ValueError:
+                last_inbound_at = None
+        return ConversationWindow(
+            last_inbound_at=last_inbound_at,
+            window_hours=window_hours,
+        )
 
     async def was_outbound_sent_for(
         self,

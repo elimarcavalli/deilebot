@@ -40,7 +40,9 @@ from .models import (ChannelPostRequest, ChannelPostResponse, DMSendRequest,
                      MessagePinResponse, ReactionAddRequest,
                      ReactionAddResponse, RoleMentionRequest,
                      RoleMentionResponse, ThreadStartRequest,
-                     ThreadStartResponse, UserProfileResponse)
+                     ThreadStartResponse, UserProfileResponse,
+                     WhatsAppSendTemplateRequest,
+                     WhatsAppSendTemplateResponse)
 
 logger = logging.getLogger("deilebot_client")
 
@@ -206,6 +208,30 @@ class BotControlClient:
             "/v1/outbound/discord/role.mention",
             RoleMentionRequest(channel_id=channel_id, role_id=role_id, text=text),
             RoleMentionResponse,
+        )
+
+    async def whatsapp_send_template(
+        self,
+        *,
+        to: str,
+        template_name: str,
+        language: str,
+        body_params: Optional[list] = None,
+        header_params: Optional[list] = None,
+        category: str = "utility",
+    ) -> WhatsAppSendTemplateResponse:
+        return await self._request(
+            "POST",
+            "/v1/outbound/whatsapp/send_template",
+            WhatsAppSendTemplateRequest(
+                to=to,
+                template_name=template_name,
+                language=language,
+                body_params=list(body_params or []),
+                header_params=list(header_params or []),
+                category=category,
+            ),
+            WhatsAppSendTemplateResponse,
         )
 
     async def get_user_profile(self, user_id: str) -> UserProfileResponse:

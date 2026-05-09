@@ -77,6 +77,10 @@ class ControlPlaneServer:
         self.adapters: Dict[str, Any] = {}
         self.audit_logger: Optional[Any] = None
         self.identity: Optional[Any] = None
+        # Optional MetricsCollector — when set, route handlers emit
+        # operator-visible counters (e.g. bot_whatsapp_conversations_total).
+        # Left as None when the daemon does not need metrics.
+        self.metrics: Optional[Any] = None
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.BaseSite] = None

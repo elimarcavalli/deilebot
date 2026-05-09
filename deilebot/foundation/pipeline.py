@@ -22,7 +22,8 @@ from deilebot.foundation.audit import AuditEventType, BotAuditLogger
 from deilebot.foundation.capabilities import CapabilityCatalog
 from deilebot.foundation.conversation_store import ConversationStore
 from deilebot.foundation.dlq import DeadLetterQueue
-from deilebot.foundation.envelope import Channel, MessageEnvelope
+from deilebot.foundation.envelope import (BotUser, Channel, MessageEnvelope,
+                                           TemplateMessage)
 from deilebot.foundation.event_bus import BotEventBus, BotEventType
 from deilebot.foundation.exceptions import (AgentInvocationError,
                                              ProviderError, RateLimited)
@@ -179,6 +180,91 @@ class EgressPipeline:
             with attempt:
                 return await adapter.send_message(channel, text, reply_to=reply_to)
         raise ProviderError("retry exhausted")  # pragma: no cover
+
+    async def send_template(
+        self,
+        adapter,
+        user: BotUser,
+        channel: Channel,
+        template: TemplateMessage,
+        *,
+        category: str = "utility",
+    ) -> str:
+        """Send a template message via the adapter.
+
+        Templates are the only outbound shape allowed outside the 24h
+        WhatsApp conversation window. The caller is responsible for
+        deciding *when* to use a template (typically by checking
+        ``ConversationStore.get_window``); this method just executes
+        the send, persists, and increments the per-category metric so
+        the operator can see how cost-bearing categories drift.
+        """
+        if not hasattr(adapter, "send_template"):
+            raise ProviderError(
+                f"adapter {adapter.name!r} does not implement send_template",
+                context={"provider": adapter.name},
+            )
+        try:
+            msg_id = await adapter.send_template(user, template)
+        except Exception as e:  # noqa: BLE001
+            self._metrics.inc(
+                "bot_outbound_total",
+                {"provider": adapter.name, "status": "fail"},
+            )
+            self._metrics.inc(
+                "bot_whatsapp_conversations_total",
+                {"category": category, "status": "fail"},
+            )
+            await self._audit.log(
+                AuditEventType.OUTBOUND_FAILED,
+                user=user,
+                channel=channel,
+                payload={
+                    "error": str(e)[:200],
+                    "kind": "template",
+                    "template": template.name,
+                    "language": template.language,
+                    "category": category,
+                },
+            )
+            raise
+        await self._store.record_outbound(
+            provider=adapter.name,
+            channel=channel,
+            provider_message_id=msg_id,
+            bot_user_id=user.bot_user_id,
+            text=f"[template:{template.name}]",
+            reply_to=None,
+            sent_at=datetime.now(timezone.utc),
+        )
+        self._metrics.inc(
+            "bot_outbound_total", {"provider": adapter.name, "status": "ok"}
+        )
+        self._metrics.inc(
+            "bot_whatsapp_conversations_total",
+            {"category": category, "status": "ok"},
+        )
+        await self._audit.log(
+            AuditEventType.OUTBOUND_SENT,
+            user=user,
+            channel=channel,
+            message_id=msg_id,
+            payload={
+                "kind": "template",
+                "template": template.name,
+                "language": template.language,
+                "category": category,
+            },
+        )
+        await self._event_bus.publish(
+            BotEventType.OUTBOUND_SENT,
+            {
+                "provider": adapter.name,
+                "channel": channel.provider_channel_id,
+                "kind": "template",
+            },
+        )
+        return msg_id
 
     async def send_fallback(
         self,

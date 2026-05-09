@@ -78,3 +78,48 @@ class TestRateLimiter:
         except RateLimited:
             pass
         assert rl.stats()["user_burst"] >= 1
+
+
+class TestOutboundWeight:
+    """RateLimiter.acquire_outbound(weight=N) — heavier ops cost more tokens.
+
+    Used to model the WhatsApp pricing tiers: a marketing template costs
+    more than a simple text reply, so it should consume a bigger slice of
+    the operator's outbound budget per send.
+    """
+
+    async def test_default_weight_one(self):
+        rl = RateLimiter(_settings(burst=2))
+        u = make_user()
+        # weight=1 default — two sends fit, third exceeds
+        await rl.acquire_outbound(u)
+        await rl.acquire_outbound(u)
+        with pytest.raises(RateLimited):
+            await rl.acquire_outbound(u)
+
+    async def test_explicit_weight_consumes_multiple_tokens(self):
+        rl = RateLimiter(_settings(burst=4))
+        u = make_user()
+        # weight=3 takes 3 of 4 tokens
+        await rl.acquire_outbound(u, weight=3)
+        # 1 token left — weight=2 fails
+        with pytest.raises(RateLimited):
+            await rl.acquire_outbound(u, weight=2)
+        # weight=1 still fits
+        await rl.acquire_outbound(u, weight=1)
+
+    async def test_weight_zero_or_negative_rejected(self):
+        rl = RateLimiter(_settings(burst=2))
+        u = make_user()
+        with pytest.raises(ValueError):
+            await rl.acquire_outbound(u, weight=0)
+        with pytest.raises(ValueError):
+            await rl.acquire_outbound(u, weight=-1)
+
+    async def test_weight_exceeds_capacity(self):
+        rl = RateLimiter(_settings(burst=2))
+        u = make_user()
+        # weight bigger than capacity always fails — no infinite consumption
+        with pytest.raises(RateLimited) as excinfo:
+            await rl.acquire_outbound(u, weight=5)
+        assert excinfo.value.context["weight"] == 5
