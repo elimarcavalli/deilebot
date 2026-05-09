@@ -28,3 +28,30 @@ class TestEventsCogShape:
         # Should expose listener methods
         assert hasattr(cog, "on_member_join")
         assert hasattr(cog, "on_thread_create")
+
+
+class TestAdapterCogWiring:
+    """Verify adapter.start() registers AdminCog and EventsCog.
+
+    The on_ready closure is not directly invocable without a live Discord
+    client, so we inspect the source of DiscordAdapter.start to assert the
+    wiring is present. Regressions (e.g. someone removing add_cog) will fail.
+    """
+
+    def test_admin_cog_is_wired(self):
+        import inspect
+
+        from deilebot.providers.discord.adapter import DiscordAdapter
+
+        src = inspect.getsource(DiscordAdapter.start)
+        assert "AdminCog" in src
+        assert "add_cog(AdminCog(" in src
+
+    def test_events_cog_is_wired(self):
+        import inspect
+
+        from deilebot.providers.discord.adapter import DiscordAdapter
+
+        src = inspect.getsource(DiscordAdapter.start)
+        assert "EventsCog" in src
+        assert "add_cog(EventsCog(" in src
