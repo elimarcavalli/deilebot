@@ -95,3 +95,83 @@ async def test_dm_validates_payload(daemon):
         # Local pydantic validation — never reaches the network
         with pytest.raises(Exception):
             await cli.discord_dm_send(user_id="42", bot_user_id="ulid", text="hi")
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp send_template endpoint (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+class FakeWhatsAppAdapter:
+    name = "whatsapp"
+    capabilities = ProviderCapabilities(
+        can_edit_message=False, can_react=True, can_send_dm=True,
+        can_threads=False, can_polls=False, can_inline_keyboards=True,
+        can_slash_commands=False, can_voice_messages=False,
+        can_send_typing=False, can_fetch_user_profile=False,
+        has_conversation_window=True,
+        max_message_chars=4096, max_attachments_per_message=1,
+        supported_attachment_kinds=frozenset({AttachmentKind.IMAGE}),
+    )
+    _client = object()
+
+    def __init__(self):
+        self.template_calls = []
+
+    async def send_template(self, user, template):
+        self.template_calls.append({
+            "to": user.provider_user_id,
+            "name": template.name,
+            "language": template.language,
+            "body_params": template.body_params,
+        })
+        return f"wamid.tpl-{len(self.template_calls)}"
+
+
+@pytest.fixture
+async def wa_daemon():
+    settings = ControlPlaneSettings(host="127.0.0.1", port=0, auth_token="cp-test")
+    srv = ControlPlaneServer(settings, version="cp-test")
+    adapter = FakeWhatsAppAdapter()
+    srv.register_adapter("whatsapp", adapter)
+    # Wire metrics so the route handler emits the cost counter.
+    from deilebot.foundation.metrics import MetricsCollector
+    srv.metrics = MetricsCollector()
+    port = await srv.start()
+    yield srv, adapter, port
+    await srv.stop()
+
+
+async def test_whatsapp_send_template_round_trip(wa_daemon):
+    srv, adapter, port = wa_daemon
+    settings = BotControlSettings(endpoint=f"http://127.0.0.1:{port}", auth_token="cp-test")
+    async with BotControlClient(settings) as cli:
+        resp = await cli.whatsapp_send_template(
+            to="5511999",
+            template_name="appointment_reminder",
+            language="pt_BR",
+            body_params=["Maria", "10:00"],
+            category="utility",
+        )
+        assert resp.message_id.startswith("wamid.tpl-")
+        assert resp.to == "5511999"
+        assert resp.template_name == "appointment_reminder"
+    assert len(adapter.template_calls) == 1
+    assert adapter.template_calls[0]["body_params"] == ("Maria", "10:00")
+    # Metric incremented by the route handler
+    snap = srv.metrics.snapshot()
+    wa_series = snap["counters"].get("bot_whatsapp_conversations_total", [])
+    assert wa_series
+    assert any(s["labels"].get("category") == "utility" for s in wa_series)
+
+
+async def test_whatsapp_send_template_no_adapter_returns_503(wa_daemon):
+    srv, _adapter, port = wa_daemon
+    # Drop the adapter to simulate not-yet-ready
+    srv.adapters.pop("whatsapp", None)
+    settings = BotControlSettings(endpoint=f"http://127.0.0.1:{port}", auth_token="cp-test")
+    async with BotControlClient(settings) as cli:
+        with pytest.raises(Exception):  # NotReady from client envelope mapping
+            await cli.whatsapp_send_template(
+                to="5511999", template_name="x", language="en_US",
+            )

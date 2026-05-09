@@ -182,3 +182,110 @@ class TestEgressDLQ:
 
 async def DLQ_count(store):
     return await store.count_dlq()
+
+
+# ---------------------------------------------------------------------------
+# TestEgressTemplate (Phase 2 — WhatsApp template send through pipeline)
+# ---------------------------------------------------------------------------
+
+
+class _FakeTemplateAdapter:
+    """Minimal adapter shim that implements `send_template` for unit tests."""
+
+    name = "whatsapp"
+
+    def __init__(self, *, raise_exc=None, msg_id="wamid.OK"):
+        self.calls = []
+        self._raise = raise_exc
+        self._msg_id = msg_id
+
+    async def send_template(self, user, template):
+        self.calls.append({"user": user, "template": template})
+        if self._raise is not None:
+            raise self._raise
+        return self._msg_id
+
+
+def _bare_egress(store) -> EgressPipeline:
+    settings = BotSettings()
+    rl = RateLimiter(settings)
+    audit = BotAuditLogger(store)
+    bus = BotEventBus()
+    metrics = MetricsCollector()
+    dlq = DeadLetterQueue(store, settings)
+    return EgressPipeline(
+        formatters={},
+        rate_limit=rl,
+        store=store,
+        audit=audit,
+        event_bus=bus,
+        metrics=metrics,
+        dlq=dlq,
+    )
+
+
+class TestEgressTemplate:
+    async def test_send_template_records_outbound_and_metric(self, store):
+        from deilebot.foundation.envelope import TemplateMessage
+        eg = _bare_egress(store)
+        adapter = _FakeTemplateAdapter()
+        u = make_user(provider="whatsapp", provider_user_id="5511999")
+        ch = make_channel(provider="whatsapp", provider_channel_id="100:5511999")
+        await store.upsert_user(u)
+        await store.upsert_channel(ch)
+        msg_id = await eg.send_template(
+            adapter, u, ch,
+            TemplateMessage(name="hi", language="en_US"),
+            category="utility",
+        )
+        assert msg_id == "wamid.OK"
+        assert len(adapter.calls) == 1
+        snap = eg._metrics.snapshot()
+        # Metric was emitted for the right category
+        wa_series = snap["counters"].get("bot_whatsapp_conversations_total", [])
+        assert wa_series, "bot_whatsapp_conversations_total counter missing"
+        ok_entries = [
+            s for s in wa_series
+            if s["labels"].get("category") == "utility"
+            and s["labels"].get("status") == "ok"
+        ]
+        assert ok_entries and ok_entries[0]["value"] == 1
+        # And outbound persistence happened
+        rows = await store.get_recent_messages("whatsapp", ch)
+        assert any(r.text == "[template:hi]" for r in rows)
+
+    async def test_send_template_failure_metric_and_audit(self, store):
+        from deilebot.foundation.envelope import TemplateMessage
+        from deilebot.foundation.exceptions import ProviderError
+        eg = _bare_egress(store)
+        adapter = _FakeTemplateAdapter(raise_exc=ProviderError("upstream 132001"))
+        u = make_user(provider="whatsapp", provider_user_id="5511999")
+        ch = make_channel(provider="whatsapp", provider_channel_id="100:5511999")
+        await store.upsert_user(u)
+        await store.upsert_channel(ch)
+        with pytest.raises(ProviderError):
+            await eg.send_template(
+                adapter, u, ch,
+                TemplateMessage(name="ghost", language="pt_BR"),
+                category="marketing",
+            )
+        snap = eg._metrics.snapshot()
+        wa_series = snap["counters"].get("bot_whatsapp_conversations_total", [])
+        # At least one fail counter must exist
+        assert any(s["labels"].get("status") == "fail" for s in wa_series)
+
+    async def test_send_template_adapter_without_method_raises(self, store):
+        from deilebot.foundation.envelope import TemplateMessage
+        from deilebot.foundation.exceptions import ProviderError
+
+        class _NoTemplate:
+            name = "telegram"
+
+        eg = _bare_egress(store)
+        u = make_user(provider="telegram", provider_user_id="100")
+        ch = make_channel(provider="telegram", provider_channel_id="100")
+        with pytest.raises(ProviderError, match="does not implement send_template"):
+            await eg.send_template(
+                _NoTemplate(), u, ch,
+                TemplateMessage(name="x", language="en_US"),
+            )

@@ -20,10 +20,13 @@ from deilebot_client.models import (ChannelPostRequest, ChannelPostResponse,
                                      MessagePinResponse, ReactionAddRequest,
                                      ReactionAddResponse, RoleMentionRequest,
                                      RoleMentionResponse, ThreadStartRequest,
-                                     ThreadStartResponse, UserProfileResponse)
+                                     ThreadStartResponse, UserProfileResponse,
+                                     WhatsAppSendTemplateRequest,
+                                     WhatsAppSendTemplateResponse)
 from pydantic import BaseModel, ValidationError
 
-from deilebot.foundation.envelope import BotUser, Channel, ChannelScope
+from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope,
+                                           TemplateMessage)
 from deilebot.foundation.exceptions import (BotFoundationError,
                                              CapabilityNotSupported,
                                              PermissionDenied, ProviderError)
@@ -77,10 +80,12 @@ class _ResponseError(Exception):
         self.response = response
 
 
-def _adapter_unavailable(request: web.Request) -> web.Response:
+def _adapter_unavailable(
+    request: web.Request, provider: str = "discord"
+) -> web.Response:
     return json_error(
         "NOT_READY",
-        "discord adapter not registered or not ready",
+        f"{provider} adapter not registered or not ready",
         status=503,
     )
 
@@ -390,6 +395,92 @@ async def get_user(request: web.Request) -> web.Response:
     return web.json_response(payload.model_dump(mode="json"))
 
 
+async def whatsapp_send_template(request: web.Request) -> web.Response:
+    try:
+        body: WhatsAppSendTemplateRequest = await _parse_body(
+            request, WhatsAppSendTemplateRequest
+        )
+    except _ResponseError as e:
+        return e.response
+    adapter = _get_adapter(request, provider_name="whatsapp")
+    if adapter is None:
+        return _adapter_unavailable(request, provider="whatsapp")
+    user = BotUser(
+        bot_user_id=f"transient-whatsapp-{body.to}",
+        provider="whatsapp",
+        provider_user_id=str(body.to),
+        display_name=str(body.to),
+    )
+    template = TemplateMessage(
+        name=body.template_name,
+        language=body.language,
+        body_params=tuple(body.body_params),
+        header_params=tuple(body.header_params),
+    )
+    try:
+        msg_id = await adapter.send_template(user, template)
+    except CapabilityNotSupported as e:
+        await _emit_audit(
+            request,
+            "outbound_failed",
+            {"op": "whatsapp.send_template", "reason": "capability"},
+        )
+        return json_error("UPSTREAM_ERROR", e.message, status=502)
+    except (PermissionDenied, BotFoundationError) as e:
+        await _emit_audit(
+            request,
+            "outbound_failed",
+            {"op": "whatsapp.send_template", "reason": "denied"},
+        )
+        return json_error("FORBIDDEN", e.message, status=403)
+    except ProviderError as e:
+        await _emit_audit(
+            request,
+            "outbound_failed",
+            {"op": "whatsapp.send_template", "reason": "upstream"},
+        )
+        return json_error("UPSTREAM_ERROR", e.message, status=502)
+    except Exception:
+        logger.exception("whatsapp.send_template failed")
+        return json_error("INTERNAL_ERROR", "unexpected failure", status=500)
+    # Track conversation cost via metric (operator-visible).
+    server = request.app["server"]
+    metrics = getattr(server, "metrics", None)
+    if metrics is not None:
+        metrics.inc(
+            "bot_whatsapp_conversations_total",
+            {"category": body.category, "status": "ok"},
+        )
+    payload = WhatsAppSendTemplateResponse(
+        message_id=str(msg_id),
+        to=str(body.to),
+        template_name=body.template_name,
+        language=body.language,
+        sent_at=datetime.now(timezone.utc),
+    )
+    await _emit_audit(
+        request,
+        "outbound_sent",
+        {
+            "op": "whatsapp.send_template",
+            "to": body.to,
+            "template": body.template_name,
+            "language": body.language,
+            "category": body.category,
+            "message_id": str(msg_id),
+        },
+    )
+    _audit_outbound(
+        request,
+        "whatsapp.send_template",
+        ok=True,
+        to=body.to,
+        template=body.template_name,
+        message_id=str(msg_id),
+    )
+    return web.json_response(payload.model_dump(mode="json"))
+
+
 def register_routes(app: web.Application) -> None:
     app.router.add_get("/v1/health", health)
     app.router.add_post("/v1/outbound/discord/channel.post", channel_post)
@@ -398,4 +489,5 @@ def register_routes(app: web.Application) -> None:
     app.router.add_post("/v1/outbound/discord/thread.start", thread_start)
     app.router.add_post("/v1/outbound/discord/message.pin", message_pin)
     app.router.add_post("/v1/outbound/discord/role.mention", role_mention)
+    app.router.add_post("/v1/outbound/whatsapp/send_template", whatsapp_send_template)
     app.router.add_get("/v1/users/{user_id}", get_user)

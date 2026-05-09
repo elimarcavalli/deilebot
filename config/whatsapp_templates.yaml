@@ -1,0 +1,31 @@
+# WhatsApp Cloud API — approved templates registry
+#
+# Each entry mirrors a template the operator has submitted to and had
+# APPROVED by Meta in the WhatsApp Business Manager. The catalog is used
+# whenever a send falls outside the 24h conversation window — the API
+# rejects free-text outside the window, only templates pass.
+#
+# Required fields per entry:
+#   name         — exact template name as registered in Meta (snake_case)
+#   language     — Meta locale code (e.g. pt_BR, en_US, es_ES)
+#   category     — utility | marketing | authentication | service
+#                  (drives Meta pricing and your cost dashboard)
+#   body_params  — ordered list of {{1}}, {{2}}, ... placeholders in body
+#   header_params — same for header (optional)
+#
+# Adding a template here without first getting Meta approval will result
+# in a 132001 (template name does not exist) error from Cloud API at
+# send time.
+#
+# Adding a NEW language to an existing template requires submitting that
+# language to Meta separately and adding a new entry here.
+#
+# See docs/whatsapp/SETUP.md for the operator runbook.
+
+templates:
+  # Example utility template — safe-by-default scaffold for new operators.
+  - name: hello_world
+    language: en_US
+    category: utility
+    body_params: []
+    header_params: []

@@ -79,13 +79,27 @@ class RateLimiter:
         self,
         user: BotUser,
         channel: Optional[Channel] = None,
+        *,
+        weight: int = 1,
     ) -> None:
+        """Consume `weight` outbound tokens for this user.
+
+        WhatsApp templates count more than free text (each conversation has
+        a price tier — see Meta pricing). Callers can pass `weight` to model
+        that cost; the default of 1 keeps existing call sites unchanged.
+        """
+        if weight < 1:
+            raise ValueError("weight must be >= 1")
         bucket = self._bucket_for(self._outbound_buckets, user.bot_user_id)
-        if not await bucket.try_acquire():
+        if not await bucket.try_acquire(n=weight):
             self._stats["outbound_burst"] += 1
             raise RateLimited(
                 "outbound burst exceeded",
-                context={"reason": "outbound_burst", "bot_user_id": user.bot_user_id},
+                context={
+                    "reason": "outbound_burst",
+                    "bot_user_id": user.bot_user_id,
+                    "weight": weight,
+                },
             )
 
     def stats(self) -> Dict[str, int]:

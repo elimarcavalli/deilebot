@@ -47,6 +47,7 @@ class WhatsAppNormalizer:
         msg_type = msg.get("type", "text")
         text = (msg.get("text") or {}).get("body", "") if msg_type == "text" else ""
         attachments = ()
+        raw_extra: dict = {"phone_number_id": phone_number_id, "wa_id": wa_id}
         if msg_type == "image":
             attachments = (
                 Attachment(kind=AttachmentKind.IMAGE, mime=(msg.get("image") or {}).get("mime_type")),
@@ -64,6 +65,28 @@ class WhatsAppNormalizer:
                     filename=d.get("filename"),
                 ),
             )
+        elif msg_type == "interactive":
+            # User clicked a Reply Button or selected a List row.
+            # We populate ``text`` with the human-visible label so any
+            # downstream intent classifier sees the user's choice as text,
+            # AND drop the structured reply into ``raw['interactive']`` for
+            # callers that want the callback id directly.
+            inter = msg.get("interactive") or {}
+            kind = inter.get("type")
+            reply: dict = {}
+            if kind == "button_reply":
+                reply = inter.get("button_reply") or {}
+                text = str(reply.get("title") or "")
+            elif kind == "list_reply":
+                reply = inter.get("list_reply") or {}
+                text = str(reply.get("title") or "")
+            if reply:
+                raw_extra["interactive"] = {
+                    "kind": kind,
+                    "id": reply.get("id"),
+                    "title": reply.get("title"),
+                    "description": reply.get("description"),
+                }
         ts = msg.get("timestamp")
         sent = (
             datetime.fromtimestamp(int(ts), tz=timezone.utc)
@@ -77,5 +100,5 @@ class WhatsAppNormalizer:
             text=text,
             markup=MarkupAST.from_plain(text),
             attachments=attachments,
-            raw=MappingProxyType({"phone_number_id": phone_number_id, "wa_id": wa_id}),
+            raw=MappingProxyType(raw_extra),
         )

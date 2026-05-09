@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from pydantic import SecretStr
@@ -49,6 +50,11 @@ class WhatsAppSettings(BaseSettings):
     app_secret: Optional[SecretStr] = None
     api_version: str = "v22.0"
     self_user_id: str = ""
+    # Path to the operator's approved-templates catalog. When the file is
+    # absent, the adapter starts with an empty catalog and any send_template
+    # call will fall through to Meta with no components — useful for
+    # zero-param templates registered straight in Business Manager.
+    templates_path: Path = Path("./config/whatsapp_templates.yaml")
 
     if SettingsConfigDict is not None:
         model_config = SettingsConfigDict(

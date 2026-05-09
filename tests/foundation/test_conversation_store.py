@@ -220,3 +220,80 @@ class TestChannel:
         retrieved = await store.get_channel("fake", "c-99")
         assert retrieved is not None
         assert retrieved.scope == ChannelScope.GROUP
+
+
+class TestGetWindow:
+    """ConversationStore.get_window — derived from latest inbound timestamp."""
+
+    async def test_no_inbound_yields_closed_window(self, store):
+        ch = make_channel(provider="whatsapp", provider_channel_id="100:5511999")
+        await store.upsert_channel(ch)
+        win = await store.get_window("whatsapp", ch)
+        assert win.last_inbound_at is None
+        assert win.is_open is False
+
+    async def test_recent_inbound_yields_open_window(self, store):
+        ch = make_channel(provider="whatsapp", provider_channel_id="100:5511999")
+        u = make_user(provider="whatsapp", provider_user_id="5511999")
+        await store.upsert_user(u)
+        await store.upsert_channel(ch)
+        env = make_envelope(
+            text="oi",
+            channel=ch,
+            author=u,
+            sent_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+        )
+        await store.record_inbound(env)
+        win = await store.get_window("whatsapp", ch)
+        assert win.last_inbound_at is not None
+        assert win.is_open is True
+
+    async def test_stale_inbound_yields_closed_window(self, store):
+        ch = make_channel(provider="whatsapp", provider_channel_id="100:5511999")
+        u = make_user(provider="whatsapp", provider_user_id="5511999")
+        await store.upsert_user(u)
+        await store.upsert_channel(ch)
+        env = make_envelope(
+            text="oi",
+            channel=ch,
+            author=u,
+            sent_at=datetime.now(timezone.utc) - timedelta(hours=25),
+        )
+        await store.record_inbound(env)
+        win = await store.get_window("whatsapp", ch, window_hours=24)
+        assert win.is_open is False
+
+    async def test_outbound_only_yields_closed_window(self, store):
+        """Window opens only on inbound — agent's own outbound does not count."""
+        ch = make_channel(provider="whatsapp", provider_channel_id="100:5511999")
+        u = make_user(provider="whatsapp", provider_user_id="5511999")
+        await store.upsert_user(u)
+        await store.upsert_channel(ch)
+        await store.record_outbound(
+            provider="whatsapp",
+            channel=ch,
+            provider_message_id="wamid.outbound",
+            bot_user_id=u.bot_user_id,
+            text="hi",
+            reply_to=None,
+            sent_at=datetime.now(timezone.utc),
+        )
+        win = await store.get_window("whatsapp", ch)
+        assert win.last_inbound_at is None
+        assert win.is_open is False
+
+    async def test_custom_window_hours(self, store):
+        ch = make_channel(provider="whatsapp", provider_channel_id="100:5511999")
+        u = make_user(provider="whatsapp", provider_user_id="5511999")
+        await store.upsert_user(u)
+        await store.upsert_channel(ch)
+        env = make_envelope(
+            text="oi",
+            channel=ch,
+            author=u,
+            sent_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+        await store.record_inbound(env)
+        # 1h window — closed; 24h window — open
+        assert (await store.get_window("whatsapp", ch, window_hours=1)).is_open is False
+        assert (await store.get_window("whatsapp", ch, window_hours=24)).is_open is True

@@ -136,6 +136,34 @@ class UserProfileResponse(_Strict):
     is_bot: bool = False
 
 
+# -- whatsapp.send_template ---------------------------------------------------
+
+
+class WhatsAppSendTemplateRequest(_Strict):
+    """Send an approved WhatsApp template to a user.
+
+    ``to`` is the WhatsApp ID (E.164 phone number without ``+``). The
+    template ``name`` + ``language`` must match an entry in the operator's
+    catalog (``config/whatsapp_templates.yaml``); otherwise the bot will
+    forward the call but Meta will return template-not-found.
+    """
+
+    to: str
+    template_name: str
+    language: str
+    body_params: List[str] = Field(default_factory=list)
+    header_params: List[str] = Field(default_factory=list)
+    category: str = "utility"  # utility | marketing | authentication | service
+
+
+class WhatsAppSendTemplateResponse(_Strict):
+    message_id: str
+    to: str
+    template_name: str
+    language: str
+    sent_at: datetime
+
+
 # -- error envelope -----------------------------------------------------------
 
 
