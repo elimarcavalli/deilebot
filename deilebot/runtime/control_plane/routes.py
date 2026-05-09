@@ -417,9 +417,20 @@ async def whatsapp_send_template(request: web.Request) -> web.Response:
         body_params=tuple(body.body_params),
         header_params=tuple(body.header_params),
     )
+    server = request.app["server"]
+    metrics = getattr(server, "metrics", None)
+
+    def _emit_metric(status: str) -> None:
+        if metrics is not None:
+            metrics.inc(
+                "bot_whatsapp_conversations_total",
+                {"category": body.category, "status": status},
+            )
+
     try:
         msg_id = await adapter.send_template(user, template)
     except CapabilityNotSupported as e:
+        _emit_metric("fail")
         await _emit_audit(
             request,
             "outbound_failed",
@@ -427,6 +438,7 @@ async def whatsapp_send_template(request: web.Request) -> web.Response:
         )
         return json_error("UPSTREAM_ERROR", e.message, status=502)
     except (PermissionDenied, BotFoundationError) as e:
+        _emit_metric("fail")
         await _emit_audit(
             request,
             "outbound_failed",
@@ -434,6 +446,7 @@ async def whatsapp_send_template(request: web.Request) -> web.Response:
         )
         return json_error("FORBIDDEN", e.message, status=403)
     except ProviderError as e:
+        _emit_metric("fail")
         await _emit_audit(
             request,
             "outbound_failed",
@@ -441,16 +454,11 @@ async def whatsapp_send_template(request: web.Request) -> web.Response:
         )
         return json_error("UPSTREAM_ERROR", e.message, status=502)
     except Exception:
+        _emit_metric("fail")
         logger.exception("whatsapp.send_template failed")
         return json_error("INTERNAL_ERROR", "unexpected failure", status=500)
-    # Track conversation cost via metric (operator-visible).
-    server = request.app["server"]
-    metrics = getattr(server, "metrics", None)
-    if metrics is not None:
-        metrics.inc(
-            "bot_whatsapp_conversations_total",
-            {"category": body.category, "status": "ok"},
-        )
+    # Success path — track conversation cost via metric (operator-visible).
+    _emit_metric("ok")
     payload = WhatsAppSendTemplateResponse(
         message_id=str(msg_id),
         to=str(body.to),

@@ -175,3 +175,32 @@ async def test_whatsapp_send_template_no_adapter_returns_503(wa_daemon):
             await cli.whatsapp_send_template(
                 to="5511999", template_name="x", language="en_US",
             )
+
+
+async def test_whatsapp_send_template_failure_emits_fail_metric(wa_daemon):
+    """Adapter failure → status=fail metric so the operator sees attempts that failed."""
+    from deilebot.foundation.exceptions import ProviderError
+
+    srv, _, port = wa_daemon
+
+    class FailingAdapter(FakeWhatsAppAdapter):
+        async def send_template(self, user, template):
+            raise ProviderError("upstream 132001: template not found", context={})
+
+    srv.adapters["whatsapp"] = FailingAdapter()
+    settings = BotControlSettings(endpoint=f"http://127.0.0.1:{port}", auth_token="cp-test")
+    async with BotControlClient(settings) as cli:
+        with pytest.raises(Exception):
+            await cli.whatsapp_send_template(
+                to="5511999",
+                template_name="ghost",
+                language="pt_BR",
+                category="marketing",
+            )
+    snap = srv.metrics.snapshot()
+    wa_series = snap["counters"].get("bot_whatsapp_conversations_total", [])
+    assert any(
+        s["labels"].get("status") == "fail"
+        and s["labels"].get("category") == "marketing"
+        for s in wa_series
+    ), f"expected fail/marketing entry, got {wa_series}"
