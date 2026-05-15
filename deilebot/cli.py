@@ -171,6 +171,9 @@ async def _run_provider(provider: str, guild_ids: Optional[List[int]] = None) ->
             control_plane = ControlPlaneServer(cp_settings, version="0.1.0")
             control_plane.audit_logger = audit
             control_plane.identity = identity
+            # Wire the ingress pipeline + identity so /v1/test/simulate
+            # can run an inbound flow end-to-end without a real Discord msg.
+            control_plane.pipeline = ingress
         elif cp_settings.enabled and not cp_settings.auth_token:
             import logging as _logging
 

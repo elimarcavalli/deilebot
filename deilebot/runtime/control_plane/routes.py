@@ -569,6 +569,164 @@ async def whatsapp_send_template(request: web.Request) -> web.Response:
     return web.json_response(payload.model_dump(mode="json"))
 
 
+async def test_simulate(request: web.Request) -> web.Response:
+    """Simulate an inbound message as if Discord delivered it.
+
+    Body::
+        {
+          "prompt": "<text the user would have typed>",
+          "source": "dm" | "slash",     # default "dm"
+          "user_id": "<discord snowflake>",     # required
+          "display_name": "<name>",     # default "test-user"
+          "channel_id": "<discord snowflake>",  # required
+          "channel_scope": "DM" | "GROUP" | "THREAD",   # default "DM"
+        }
+
+    Returns the canonical pipeline result envelope::
+        {
+          "ok": bool,
+          "elapsed_ms": int,
+          "error": "<str|null>",
+        }
+
+    The handler builds a synthetic :class:`MessageEnvelope` and feeds it
+    to ``pipeline.handle`` (for DM mode) or simulates ``/deile`` by
+    setting ``raw.source = "slash:/deile"`` (the pipeline already
+    short-circuits some side effects for that source).
+
+    Bearer auth is required (same token as outbound). The endpoint is
+    safe for the operator harness but should not be exposed publicly —
+    a malicious caller with the token could inject arbitrary prompts
+    impersonating any user_id.
+    """
+    server = request.app["server"]
+    pipeline = getattr(server, "pipeline", None)
+    if pipeline is None:
+        return json_error("UNAVAILABLE", "pipeline not wired", status=503)
+    adapter = _get_adapter(request)
+    if adapter is None:
+        return _adapter_unavailable(request)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return json_error("BAD_REQUEST", "invalid JSON", status=400)
+
+    prompt = str(body.get("prompt") or "").strip()
+    user_id = str(body.get("user_id") or "").strip()
+    channel_id = str(body.get("channel_id") or "").strip()
+    if not prompt or not user_id or not channel_id:
+        return json_error(
+            "BAD_REQUEST",
+            "prompt, user_id and channel_id are all required",
+            status=400,
+        )
+    source = str(body.get("source") or "dm").lower()
+    display_name = str(body.get("display_name") or "test-user")
+    scope_str = str(body.get("channel_scope") or "DM").upper()
+    try:
+        scope = ChannelScope(scope_str)
+    except ValueError:
+        scope = ChannelScope.DM
+
+    import asyncio
+    import time
+
+    start = time.monotonic()
+    error: Optional[str] = None
+    extra: dict = {}
+
+    if source == "slash":
+        # Exercise the EXACT same code path as the real /deile cog —
+        # via the shared run_slash_dispatch core.
+        from deilebot.foundation.slash_dispatch import run_slash_dispatch
+
+        store = pipeline.store
+        identity = pipeline.identity
+        try:
+            result = await asyncio.wait_for(
+                run_slash_dispatch(
+                    prompt=prompt,
+                    user_id=user_id,
+                    display_name=display_name,
+                    channel_id=channel_id,
+                    store=store,
+                    identity=identity,
+                    channel_scope=scope,
+                    channel_name=None if scope == ChannelScope.DM else "test-channel",
+                ),
+                timeout=120.0,
+            )
+            extra["kind"] = result.kind
+            extra["reason"] = result.reason
+            extra["message_id"] = result.message_id
+            if result.kind == "error":
+                error = result.reason
+        except asyncio.TimeoutError:
+            error = "timeout"
+        except Exception as exc:  # noqa: BLE001
+            error = f"{type(exc).__name__}: {exc}"
+            logger.exception("test_simulate(slash): raised")
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return web.json_response({
+            "ok": error is None,
+            "elapsed_ms": elapsed_ms,
+            "error": error,
+            "channel_id": channel_id,
+            "user_id": user_id,
+            "source": source,
+            **extra,
+        })
+
+    # source == "dm" → drive the full ingress pipeline as if the
+    # DiscordAdapter had received a normalized envelope.
+    from types import MappingProxyType
+
+    from deile.common.markup_ast import MarkupAST
+    from deilebot.foundation.envelope import MessageEnvelope
+
+    msg_id = f"test-{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+    raw_payload: dict = {"test_harness": True}
+    channel = Channel(
+        provider="discord",
+        provider_channel_id=channel_id,
+        name=None if scope == ChannelScope.DM else "test-channel",
+        scope=scope,
+    )
+    author = BotUser(
+        bot_user_id=f"discord-{user_id}",
+        provider="discord",
+        provider_user_id=user_id,
+        display_name=display_name,
+    )
+    env = MessageEnvelope(
+        message_id=msg_id,
+        channel=channel,
+        author=author,
+        sent_at=datetime.now(timezone.utc),
+        text=prompt,
+        markup=MarkupAST.from_plain(prompt),
+        raw=MappingProxyType(raw_payload),
+    )
+    try:
+        await asyncio.wait_for(pipeline.handle(env, adapter), timeout=120.0)
+    except asyncio.TimeoutError:
+        error = "timeout"
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        logger.exception("test_simulate(dm): pipeline raised")
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    return web.json_response({
+        "ok": error is None,
+        "elapsed_ms": elapsed_ms,
+        "error": error,
+        "message_id": msg_id,
+        "channel_id": channel_id,
+        "user_id": user_id,
+        "source": source,
+    })
+
+
 def register_routes(app: web.Application) -> None:
     app.router.add_get("/v1/health", health)
     app.router.add_post("/v1/outbound/discord/channel.post", channel_post)
@@ -580,3 +738,5 @@ def register_routes(app: web.Application) -> None:
     app.router.add_post("/v1/outbound/discord/role.mention", role_mention)
     app.router.add_post("/v1/outbound/whatsapp/send_template", whatsapp_send_template)
     app.router.add_get("/v1/users/{user_id}", get_user)
+    # Test harness — operator-only; same Bearer auth as outbound.
+    app.router.add_post("/v1/test/simulate", test_simulate)
