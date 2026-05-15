@@ -729,3 +729,108 @@ class ConversationStore:
             display_name=row[3],
             is_bot=bool(row[4]),
         )
+
+    async def list_channels(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return every channel the bot has touched, with msg count + last activity.
+
+        Uses the ``message`` table as source of truth (some channels may
+        have been seen without being persisted in the ``channel`` table —
+        the LEFT JOIN keeps them visible). Sorted by last message DESC.
+        Used by ``/historico_canais`` so the operator can pick a channel.
+        """
+        db = self._require_db()
+        cursor = await db.execute(
+            """
+            SELECT m.provider, m.provider_channel_id,
+                   COUNT(*) AS msg_count,
+                   MAX(m.sent_at) AS last_msg_at,
+                   c.name, c.scope, c.parent_channel_id
+            FROM message m
+            LEFT JOIN channel c
+              ON c.provider = m.provider
+             AND c.provider_channel_id = m.provider_channel_id
+            GROUP BY m.provider, m.provider_channel_id
+            ORDER BY last_msg_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [
+            {
+                "provider": r[0],
+                "provider_channel_id": r[1],
+                "msg_count": r[2],
+                "last_msg_at": r[3],
+                "name": r[4],
+                "scope": r[5],
+                "parent_channel_id": r[6],
+            }
+            for r in rows
+        ]
+
+    async def list_messages_by_channel(
+        self,
+        provider: str,
+        provider_channel_id: str,
+        *,
+        limit: int = 30,
+        search: Optional[str] = None,
+    ) -> List[StoredMessage]:
+        """Return messages for a given channel, newest first.
+
+        ``search`` does a case-insensitive LIKE on the text column when
+        provided. Mirrors :meth:`list_messages_by_user` but channel-keyed.
+        """
+        db = self._require_db()
+        if search:
+            cursor = await db.execute(
+                """
+                SELECT id, provider, provider_channel_id, provider_message_id,
+                       direction, bot_user_id, text, reply_to_message_id,
+                       sent_at, persisted_at
+                FROM message
+                WHERE provider = ? AND provider_channel_id = ?
+                  AND text LIKE ? COLLATE NOCASE
+                ORDER BY sent_at DESC, id DESC
+                LIMIT ?
+                """,
+                (provider, provider_channel_id, f"%{search}%", limit),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                SELECT id, provider, provider_channel_id, provider_message_id,
+                       direction, bot_user_id, text, reply_to_message_id,
+                       sent_at, persisted_at
+                FROM message
+                WHERE provider = ? AND provider_channel_id = ?
+                ORDER BY sent_at DESC, id DESC
+                LIMIT ?
+                """,
+                (provider, provider_channel_id, limit),
+            )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        out: List[StoredMessage] = []
+        for r in rows:
+            out.append(
+                StoredMessage(
+                    id=r[0],
+                    provider=r[1],
+                    provider_channel_id=r[2],
+                    provider_message_id=r[3],
+                    direction=r[4],
+                    bot_user_id=r[5],
+                    text=r[6],
+                    reply_to_message_id=r[7],
+                    sent_at=datetime.fromisoformat(r[8].replace("Z", "+00:00"))
+                    if r[8] and "T" in r[8]
+                    else datetime.now(timezone.utc),
+                    persisted_at=datetime.fromisoformat(r[9].replace("Z", "+00:00"))
+                    if r[9] and "T" in r[9]
+                    else datetime.now(timezone.utc),
+                )
+            )
+        return out

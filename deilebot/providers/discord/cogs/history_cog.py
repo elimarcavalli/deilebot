@@ -1,38 +1,37 @@
 """HistoryCog — slash commands para inspeção de histórico do bot.
 
 Comandos:
-    /historico [user_id] [busca] [limit]
-        - sem args: lista as últimas N mensagens do próprio usuário
-          (admin sem ``user_id`` ganha o atalho de listar TODOS os
-          ``bot_user`` disponíveis para escolher).
-        - com ``user_id`` (admin only — ou self): mensagens daquele user.
-        - ``user_id`` aceita os 3 formatos (escolha o mais conveniente):
-            ``01KRNFTQQF38Z4G51KNX6QRTC0`` (bot_user_id ULID interno)
-            ``discord:1475913578648436909`` (provider:provider_user_id)
-            ``1475913578648436909`` (snowflake puro Discord)
+    /historico [user_id?] [channel_id?] [busca?] [limite?]
+        - Sem args (admin): visão consolidada — lista bot_users +
+          canais lado a lado para o operador escolher um filtro.
+        - Sem args (não-admin): mensagens do próprio user (todos os canais).
+        - Com ``user_id``: mensagens daquele bot_user (admin only quando
+          for diferente do caller).
+        - Com ``channel_id``: mensagens daquele canal (admin only).
+        - ``user_id`` aceita: ULID interno (26 chars), ``provider:id``,
+          ou snowflake puro Discord.
+        - ``channel_id`` aceita o snowflake puro do canal Discord.
+
+    /historico_users   (admin)
+        - Lista TODOS os bot_users com count + last_seen + bot_user_id.
+
+    /historico_canais  (admin)
+        - Lista TODOS os canais que o bot tocou (DM + GROUP) com count
+          + last_msg + scope. **Era /historico_canais antigo (que listava
+          users) — corrigido para fazer jus ao nome**.
 
     /historico_export
-        - exporta TODO o histórico do próprio usuário num JSON,
-          enviado como anexo via DM (LGPD/backup self-service).
+        - Exporta JSON com TODO o próprio histórico (LGPD self-service).
 
-    /historico_canais  (admin only)
-        - lista bot_users que conversaram com o bot, com contagem
-          de mensagens e last_seen. Útil quando outras pessoas
-          começarem a usar.
-
-    /memoria [user_id]  (admin only)
-        - mostra o ``context_data_json`` da ``persisted_session`` do
-          DEILE para um user — a working memory cross-turn do agente.
-          Sem ``user_id`` mostra o do próprio caller.
+    /memoria [user_id?]   (admin)
+        - context_data_json da persisted_session do agente DEILE para
+          um user. Sem ``user_id`` mostra o do próprio caller.
 
 Notas de segurança
 ------------------
-- ``user_id != self`` exige ``is_owner`` (PermissionGate). Sem isso,
-  qualquer pessoa veria as DMs de qualquer outra — vazamento crítico.
-- ``/historico_canais`` e ``/memoria`` são owner-only por padrão; um
-  user comum pegará 403.
-- Todas as respostas que listam *outras* pessoas são enviadas com
-  ``ephemeral=True`` para não expor metadados em canal público.
+- ``user_id != self`` ou ``channel_id`` exigem ``is_owner``.
+- Toda resposta ``ephemeral=True`` (não vaza metadados em canal público).
+- ``/memoria`` é owner-only por padrão.
 """
 
 from __future__ import annotations
@@ -56,20 +55,21 @@ from deilebot.foundation.settings import get_bot_settings
 
 _logger = get_logger("history_cog")
 
+_ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
+
 
 def _normalize_user_id_input(raw: str) -> str:
     """Normalize the operator-supplied user identifier.
 
     Accepts (in priority order):
-        - bot_user_id ULID (26 chars, starts with letter)  → returned as-is
-        - 'discord:1234' / '<provider>:<id>'              → returned as-is
-        - bare snowflake digits                           → wrapped in 'discord:'
+        - bot_user_id ULID (26 chars Crockford base32) → as-is, uppercased
+        - 'discord:1234' / '<provider>:<id>'           → as-is
+        - bare snowflake digits                        → wrapped in 'discord:'
     """
     s = (raw or "").strip()
     if not s:
         return s
-    # ULID = 26 chars, base32 (Crockford), starts with 0-9 or letter
-    if re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", s.upper()):
+    if _ULID_RE.fullmatch(s.upper()):
         return s.upper()
     if ":" in s:
         return s
@@ -78,8 +78,32 @@ def _normalize_user_id_input(raw: str) -> str:
     return s
 
 
+def _short(text: str, n: int = 120) -> str:
+    text = (text or "").replace("\n", " ").strip()
+    return text[:n] + ("…" if len(text) > n else "")
+
+
+def _ts(dt_or_str) -> str:
+    """Format an ISO timestamp string or datetime as 'MM-DD HH:MM'."""
+    if dt_or_str is None:
+        return "?"
+    if hasattr(dt_or_str, "strftime"):
+        return dt_or_str.strftime("%m-%d %H:%M")
+    s = str(dt_or_str)
+    return s[:16].replace("T", " ")
+
+
+def _fmt_render_lines_for_messages(msgs) -> str:
+    """Render message rows ASCII-style, newest first."""
+    out = []
+    for m in msgs:
+        arrow = "→" if m.direction == "inbound" else "←"
+        out.append(f"`{_ts(m.sent_at)}` {arrow} {_short(m.text)}")
+    return "\n".join(out)
+
+
 class HistoryCog(commands.Cog):
-    """Read-only history inspection — owner can pick any user, others see self."""
+    """Read-only history inspection — owner picks any user/channel; others see self."""
 
     def __init__(self, bot: Any, runtime: Any, adapter: Any) -> None:
         self.bot = bot
@@ -107,19 +131,13 @@ class HistoryCog(commands.Cog):
         caller_id: int,
         raw: Optional[str],
     ) -> Optional[BotUser]:
-        """Map raw input to a stored BotUser. None when not found."""
         if not raw:
-            # Default: caller themselves.
-            return await self._store.get_user_by_provider_id(
-                "discord", str(caller_id)
-            )
+            return await self._store.get_user_by_provider_id("discord", str(caller_id))
         normalized = _normalize_user_id_input(raw)
-        # Try as bot_user_id (ULID).
-        if re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", normalized):
+        if _ULID_RE.fullmatch(normalized):
             user = await self._store.get_user_by_bot_user_id(normalized)
             if user is not None:
                 return user
-        # Try as 'provider:provider_user_id'.
         if ":" in normalized:
             provider, _, pid = normalized.partition(":")
             user = await self._store.get_user_by_provider_id(provider, pid)
@@ -127,16 +145,79 @@ class HistoryCog(commands.Cog):
                 return user
         return None
 
+    async def _send_admin_overview(self, ctx: commands.Context) -> None:
+        """Visão consolidada — users + canais lado a lado (somente admin sem args)."""
+        users = await self._store.list_users(limit=50)
+        channels = await self._store.list_channels(limit=50)
+
+        sections: List[str] = []
+
+        if users:
+            lines = [f"👤 **bot_users ({len(users)})**:"]
+            for u in users:
+                pid = f"{u['provider']}:{u['provider_user_id']}"
+                lines.append(
+                    f"• `{pid}` — **{u['display_name'] or '?'}** · "
+                    f"{u['msg_count']} msgs · last={_ts(u['last_seen_at'])}"
+                )
+            sections.append("\n".join(lines))
+
+        if channels:
+            lines = [f"📺 **canais ({len(channels)})**:"]
+            for ch in channels:
+                name = ch["name"] or "(sem nome)"
+                scope = ch["scope"] or "?"
+                lines.append(
+                    f"• `{ch['provider_channel_id']}` — **{name}** ({scope}) · "
+                    f"{ch['msg_count']} msgs · last={_ts(ch['last_msg_at'])}"
+                )
+            sections.append("\n".join(lines))
+
+        sections.append(
+            "💡 **Para detalhar:**\n"
+            "• `/historico user_id:<id>` (mensagens daquele user)\n"
+            "• `/historico channel_id:<id>` (mensagens daquele canal)\n"
+            "• `/historico_users` ou `/historico_canais` (lista dedicada)\n"
+            "• `/memoria user_id:<id>` (working memory do agente)"
+        )
+
+        msg = "\n\n".join(sections) if sections else "📭 DB vazio."
+        if len(msg) > 1900:
+            buf = io.StringIO(msg)
+            file = discord.File(io.BytesIO(buf.getvalue().encode()), filename="overview.txt")
+            await ctx.send("📊 visão geral (anexo, é grande)", file=file, ephemeral=True)
+        else:
+            await ctx.send(msg, ephemeral=True)
+
+    async def _render_message_block(
+        self,
+        ctx: commands.Context,
+        header: str,
+        msgs: List[Any],
+        attachment_name: str,
+    ) -> None:
+        if not msgs:
+            await ctx.send(header + "\n📭 sem mensagens.", ephemeral=True)
+            return
+        body = _fmt_render_lines_for_messages(msgs)
+        full = f"{header}\n```\n{body}\n```"
+        if len(full) > 1900:
+            file = discord.File(io.BytesIO(body.encode()), filename=attachment_name)
+            await ctx.send(header + "\n(grande — anexo)", file=file, ephemeral=True)
+        else:
+            await ctx.send(full, ephemeral=True)
+
     # ------------------------------------------------------------------
-    # /historico
+    # /historico — switch by args (user_id XOR channel_id)
     # ------------------------------------------------------------------
 
     @commands.hybrid_command(
         name="historico",
-        description="Mostra histórico de mensagens (próprio ou de outro user, se admin)",
+        description="Histórico de mensagens — por user, por canal, ou visão geral (admin)",
     )
     @app_commands.describe(
-        user_id="(admin only) bot_user_id ULID, 'discord:<id>' ou snowflake — em branco = você",
+        user_id="bot_user_id ULID, 'discord:<id>' ou snowflake — em branco = você",
+        channel_id="snowflake do canal Discord (admin only) — XOR com user_id",
         busca="palavra-chave (LIKE case-insensitive)",
         limite="quantas mensagens trazer (default 20, máx 100)",
     )
@@ -144,38 +225,46 @@ class HistoryCog(commands.Cog):
         self,
         ctx: commands.Context,
         user_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
         busca: Optional[str] = None,
         limite: int = 20,
     ) -> None:
         await ctx.defer(ephemeral=True)
         is_owner = self._is_owner(ctx.author.id)
-
-        # Cap the limit to keep messages within Discord's 2000-char window.
         limit = max(1, min(int(limite), 100))
 
-        # Admin sem user_id e sem busca: atalho — listar users disponíveis
-        # antes de mostrar mensagens. Caller pode ler a lista e re-invocar
-        # /historico user_id:<X>.
-        if is_owner and not user_id:
-            users = await self._store.list_users(limit=50)
-            if not users:
-                await ctx.send("📭 Nenhum bot_user registrado.", ephemeral=True)
-                return
-            lines = [f"📋 **{len(users)} user(s) com histórico** — passa um pra ver as mensagens:\n"]
-            for u in users:
-                pid = f"{u['provider']}:{u['provider_user_id']}"
-                lines.append(
-                    f"• `{pid}` — **{u['display_name'] or '?'}** "
-                    f"({u['msg_count']} msgs, last={u['last_seen_at'][:16].replace('T',' ')})"
-                )
-            lines.append(f"\n💡 Use: `/historico user_id:{users[0]['provider']}:{users[0]['provider_user_id']}`")
-            msg = "\n".join(lines)
-            if len(msg) > 1900:
-                msg = msg[:1897] + "…"
-            await ctx.send(msg, ephemeral=True)
+        if user_id and channel_id:
+            await ctx.send(
+                "❌ Use `user_id` OU `channel_id`, não os dois (escopos diferentes).",
+                ephemeral=True,
+            )
             return
 
-        # Non-owner trying to peek another user.
+        # Sem args + admin → overview consolidado
+        if not user_id and not channel_id and is_owner:
+            return await self._send_admin_overview(ctx)
+
+        # channel_id pedido → admin only
+        if channel_id:
+            if not is_owner:
+                await ctx.send(
+                    "❌ Apenas o owner pode filtrar por canal arbitrário.",
+                    ephemeral=True,
+                )
+                return
+            ch_id = channel_id.strip()
+            msgs = await self._store.list_messages_by_channel(
+                "discord", ch_id, limit=limit, search=busca,
+            )
+            header = (
+                f"📺 **Canal `{ch_id}`** — últimas {len(msgs)}"
+                + (f" com `{busca}`" if busca else "")
+            )
+            return await self._render_message_block(
+                ctx, header, msgs, f"historico_canal_{ch_id}.txt",
+            )
+
+        # user_id ≠ self → admin only
         if user_id and not is_owner:
             await ctx.send(
                 "❌ Apenas o owner pode consultar histórico de outros usuários.",
@@ -192,40 +281,86 @@ class HistoryCog(commands.Cog):
         msgs = await self._store.list_messages_by_user(
             target.bot_user_id, limit=limit, search=busca,
         )
-        if not msgs:
-            await ctx.send(
-                f"📭 Sem mensagens para **{target.display_name}** "
-                f"(`{target.provider}:{target.provider_user_id}`)"
-                + (f" matching `{busca}`" if busca else ""),
-                ephemeral=True,
-            )
-            return
-
         header = (
-            f"📜 **Histórico de {target.display_name}** "
+            f"👤 **{target.display_name}** "
             f"(`{target.provider}:{target.provider_user_id}`) — "
             f"últimas {len(msgs)}"
             + (f" com `{busca}`" if busca else "")
         )
-        # Render newest-first, ASCII arrow for direction. Truncate per line.
-        body_lines = []
-        for m in msgs:
-            arrow = "→" if m.direction == "inbound" else "←"
-            ts = m.sent_at.strftime("%m-%d %H:%M")
-            text = (m.text or "").replace("\n", " ").strip()
-            text = text[:120] + ("…" if len(text) > 120 else "")
-            body_lines.append(f"`{ts}` {arrow} {text}")
-        full = header + "\n```\n" + "\n".join(body_lines) + "\n```"
-        if len(full) > 1900:
-            # Chunk via attachment for long histories.
-            buf = io.StringIO("\n".join(body_lines))
-            file = discord.File(io.BytesIO(buf.getvalue().encode()), filename=f"historico_{target.provider}_{target.provider_user_id}.txt")
-            await ctx.send(header + "\n(too large — anexo)", file=file, ephemeral=True)
-        else:
-            await ctx.send(full, ephemeral=True)
+        return await self._render_message_block(
+            ctx, header, msgs,
+            f"historico_{target.provider}_{target.provider_user_id}.txt",
+        )
 
     # ------------------------------------------------------------------
-    # /historico_export
+    # /historico_users  (admin)
+    # ------------------------------------------------------------------
+
+    @commands.hybrid_command(
+        name="historico_users",
+        description="(admin) Lista bot_users registrados — count + last_seen",
+    )
+    async def historico_users(self, ctx: commands.Context) -> None:
+        await ctx.defer(ephemeral=True)
+        if not self._is_owner(ctx.author.id):
+            await ctx.send("❌ Apenas o owner pode ver essa lista.", ephemeral=True)
+            return
+        users = await self._store.list_users(limit=200)
+        if not users:
+            await ctx.send("📭 Nenhum bot_user registrado.", ephemeral=True)
+            return
+        lines = [f"👤 **{len(users)} bot_user(s):**\n"]
+        for u in users:
+            pid = f"{u['provider']}:{u['provider_user_id']}"
+            lines.append(
+                f"• `{pid}` — **{u['display_name'] or '?'}** · "
+                f"{u['msg_count']} msgs · last={_ts(u['last_seen_at'])}\n"
+                f"   `bot_user_id={u['bot_user_id']}`"
+            )
+        msg = "\n".join(lines)
+        if len(msg) > 1900:
+            file = discord.File(io.BytesIO(msg.encode()), filename="bot_users.txt")
+            await ctx.send(f"📋 {len(users)} bot_users (anexo)", file=file, ephemeral=True)
+        else:
+            await ctx.send(msg, ephemeral=True)
+
+    # ------------------------------------------------------------------
+    # /historico_canais  (admin)  — agora ALI lista canais de fato
+    # ------------------------------------------------------------------
+
+    @commands.hybrid_command(
+        name="historico_canais",
+        description="(admin) Lista canais (DM + GROUP) que o bot tocou — count + last_msg",
+    )
+    async def historico_canais(self, ctx: commands.Context) -> None:
+        await ctx.defer(ephemeral=True)
+        if not self._is_owner(ctx.author.id):
+            await ctx.send("❌ Apenas o owner pode ver essa lista.", ephemeral=True)
+            return
+        channels = await self._store.list_channels(limit=200)
+        if not channels:
+            await ctx.send("📭 Nenhum canal registrado.", ephemeral=True)
+            return
+        lines = [f"📺 **{len(channels)} canal(is):**\n"]
+        for ch in channels:
+            name = ch["name"] or "(sem nome)"
+            scope = ch["scope"] or "?"
+            lines.append(
+                f"• `{ch['provider_channel_id']}` — **{name}** ({scope}) · "
+                f"{ch['msg_count']} msgs · last={_ts(ch['last_msg_at'])}"
+            )
+        lines.append(
+            f"\n💡 Para mensagens: `/historico channel_id:{channels[0]['provider_channel_id']}`"
+        )
+        msg = "\n".join(lines)
+        if len(msg) > 1900:
+            file = discord.File(io.BytesIO(msg.encode()), filename="channels.txt")
+            await ctx.send(f"📋 {len(channels)} canais (anexo)", file=file, ephemeral=True)
+        else:
+            await ctx.send(msg, ephemeral=True)
+
+    # ------------------------------------------------------------------
+    # /historico_export — JSON do próprio user
     # ------------------------------------------------------------------
 
     @commands.hybrid_command(
@@ -239,10 +374,7 @@ class HistoryCog(commands.Cog):
             await ctx.send("📭 Nenhum histórico seu encontrado.", ephemeral=True)
             return
 
-        # No upper limit for self-export — owner of the data sees it all.
-        msgs = await self._store.list_messages_by_user(
-            target.bot_user_id, limit=10_000,
-        )
+        msgs = await self._store.list_messages_by_user(target.bot_user_id, limit=10_000)
         export = {
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "user": {
@@ -277,39 +409,6 @@ class HistoryCog(commands.Cog):
         )
 
     # ------------------------------------------------------------------
-    # /historico_canais  (admin)
-    # ------------------------------------------------------------------
-
-    @commands.hybrid_command(
-        name="historico_canais",
-        description="(admin) Lista todos os bot_users que conversaram com o bot",
-    )
-    async def historico_canais(self, ctx: commands.Context) -> None:
-        await ctx.defer(ephemeral=True)
-        if not self._is_owner(ctx.author.id):
-            await ctx.send("❌ Apenas o owner pode ver essa lista.", ephemeral=True)
-            return
-        users = await self._store.list_users(limit=200)
-        if not users:
-            await ctx.send("📭 Nenhum bot_user registrado.", ephemeral=True)
-            return
-        lines = [f"📋 **{len(users)} bot_user(s) registrados:**\n"]
-        for u in users:
-            pid = f"{u['provider']}:{u['provider_user_id']}"
-            lines.append(
-                f"• `{pid}` — **{u['display_name'] or '?'}** "
-                f"({u['msg_count']} msgs, last={u['last_seen_at'][:16].replace('T',' ')})\n"
-                f"   `bot_user_id={u['bot_user_id']}`"
-            )
-        msg = "\n".join(lines)
-        if len(msg) > 1900:
-            buf = io.StringIO(msg)
-            file = discord.File(io.BytesIO(buf.getvalue().encode()), filename="bot_users.txt")
-            await ctx.send(f"📋 {len(users)} bot_users (anexo, pra caber)", file=file, ephemeral=True)
-        else:
-            await ctx.send(msg, ephemeral=True)
-
-    # ------------------------------------------------------------------
     # /memoria  (admin)
     # ------------------------------------------------------------------
 
@@ -335,8 +434,6 @@ class HistoryCog(commands.Cog):
             await ctx.send(f"❌ User `{user_id or 'self'}` não encontrado.", ephemeral=True)
             return
 
-        # Sessions DB lives in the same data dir as the bot sqlite. Path
-        # is configurable via DEILE_BOT_SESSIONS_SQLITE_PATH.
         sessions_path = Path(
             os.environ.get(
                 "DEILE_BOT_SESSIONS_SQLITE_PATH",
