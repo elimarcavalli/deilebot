@@ -422,6 +422,13 @@ class IngressPipeline:
             f"channel_scope: {scope}",
             f"channel_id: {env.channel.provider_channel_id}",
             f"channel_name: {env.channel.name or '-'}",
+            # The user-message-id is the snowflake of the message the user
+            # JUST sent (the inbound this turn handles). It's the right
+            # value for "react/edit/pin to my last message" or for the
+            # worker to react 🔧/✅ on the user's message during dispatch.
+            f"user_message_id: {env.message_id}",
+            f"user_id: {user.provider_user_id}",
+            f"author_display_name: {user.display_name or '-'}",
             f"is_owner: {is_owner}",
             f"persona: {persona}",
         ]
@@ -464,6 +471,9 @@ class IngressPipeline:
                 "channel_scope": scope,
                 "channel_id": env.channel.provider_channel_id,
                 "channel_name": env.channel.name,
+                "user_message_id": env.message_id,
+                "user_id": user.provider_user_id,
+                "author_display_name": user.display_name,
                 "is_owner": is_owner,
                 "persona": persona,
                 # Surface inbound attachments so the agent can call
@@ -485,15 +495,39 @@ class IngressPipeline:
             message_id=env.message_id,
             payload={"persona": persona, "extra_chars": len(extra)},
         )
-        # Show typing indicator while the agent processes (best-effort, never raises).
+        # UX premium: react 🔧 imediatamente para sinalizar "recebi"
+        # (best-effort; cooldown não-fatal). E typing keep-alive em loop
+        # enquanto o agent processa, pra não morrer em 10s.
         try:
-            await adapter.send_typing(env.channel)
+            await adapter.react(env.channel, env.message_id, "🔧")
         except Exception:
-            self._logger.debug("send_typing ignored", exc_info=True)
+            self._logger.debug("inbound react ignored", exc_info=True)
+
+        async def _typing_keepalive(stop_evt: "asyncio.Event") -> None:
+            while not stop_evt.is_set():
+                try:
+                    await adapter.send_typing(env.channel)
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(stop_evt.wait(), timeout=7.0)
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    return
+
+        import asyncio
+        _stop = asyncio.Event()
+        _typing_task = asyncio.create_task(_typing_keepalive(_stop))
         try:
             with timer(self.metrics, "bot_agent_invocation_seconds", {"provider": provider}):
                 response = await self.bridge.invoke(inv)
         except AgentInvocationError as e:
+            _stop.set()
+            try:
+                await _typing_task
+            except Exception:
+                pass
             self.metrics.inc(
                 "bot_agent_invocations_total",
                 {"provider": provider, "persona": persona, "status": "fail"},
@@ -505,10 +539,33 @@ class IngressPipeline:
                 message_id=env.message_id,
                 payload={"error": str(e)[:200], "type": type(e).__name__},
             )
+            # UX: react ❌ pra sinalizar erro + fallback expressivo com tipo do erro
+            try:
+                await adapter.react(env.channel, env.message_id, "❌")
+            except Exception:
+                pass
+            err_type = type(e).__name__
+            if "Timeout" in err_type:
+                reason = f"timeout — pedido demorou demais; tente algo menor"
+            else:
+                reason = f"{err_type}: {str(e)[:200]}"
             await self.egress.send_fallback(
-                adapter, env.channel, env.message_id, reason="agent_failed"
+                adapter, env.channel, env.message_id, reason=reason
             )
             return
+        finally:
+            _stop.set()
+            try:
+                if not _typing_task.done():
+                    _typing_task.cancel()
+            except Exception:
+                pass
+
+        # UX: react ✅ no envelope inbound depois do sucesso
+        try:
+            await adapter.react(env.channel, env.message_id, "✅")
+        except Exception:
+            self._logger.debug("success react ignored", exc_info=True)
         await self.audit.log(
             AuditEventType.AGENT_RESPONDED,
             user=user,

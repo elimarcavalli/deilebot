@@ -36,7 +36,8 @@ from .errors import (BotClientError, BotClientRateLimited,
                      BotClientTimeoutError, BotClientUpstreamError,
                      exception_for_code)
 from .models import (ChannelPostRequest, ChannelPostResponse, DMSendRequest,
-                     DMSendResponse, HealthResponse, MessagePinRequest,
+                     DMSendResponse, HealthResponse, MessageEditRequest,
+                     MessageEditResponse, MessagePinRequest,
                      MessagePinResponse, ReactionAddRequest,
                      ReactionAddResponse, RoleMentionRequest,
                      RoleMentionResponse, ThreadStartRequest,
@@ -198,6 +199,16 @@ class BotControlClient:
             "/v1/outbound/discord/message.pin",
             MessagePinRequest(channel_id=channel_id, message_id=message_id),
             MessagePinResponse,
+        )
+
+    async def discord_message_edit(
+        self, *, channel_id: str, message_id: str, text: str
+    ) -> MessageEditResponse:
+        return await self._request(
+            "POST",
+            "/v1/outbound/discord/message.edit",
+            MessageEditRequest(channel_id=channel_id, message_id=message_id, text=text),
+            MessageEditResponse,
         )
 
     async def discord_role_mention(

@@ -16,7 +16,8 @@ from typing import Any, Mapping, Optional
 from aiohttp import web
 from deilebot_client.models import (ChannelPostRequest, ChannelPostResponse,
                                      DMSendRequest, DMSendResponse,
-                                     HealthResponse, MessagePinRequest,
+                                     HealthResponse, MessageEditRequest,
+                                     MessageEditResponse, MessagePinRequest,
                                      MessagePinResponse, ReactionAddRequest,
                                      ReactionAddResponse, RoleMentionRequest,
                                      RoleMentionResponse, ThreadStartRequest,
@@ -322,6 +323,7 @@ async def message_pin(request: web.Request) -> web.Response:
     adapter = _get_adapter(request)
     if adapter is None:
         return _adapter_unavailable(request)
+    import discord  # lazy import
     try:
         client = getattr(adapter, "_client", None)
         if client is None:
@@ -329,8 +331,46 @@ async def message_pin(request: web.Request) -> web.Response:
         ch = client.get_channel(int(body.channel_id))
         if ch is None:
             ch = await client.fetch_channel(int(body.channel_id))
+        # Pin in DM is NOT supported by the Discord API for bot accounts —
+        # discord.py 2.x DMChannel doesn't even define .pin(). Detect early
+        # and return a clear, actionable error so the agent doesn't show
+        # "upstream error" misterious to the user.
+        if isinstance(ch, discord.DMChannel):
+            await _emit_audit(
+                request,
+                "outbound_failed",
+                {"op": "message.pin", "reason": "dm_not_supported"},
+            )
+            return json_error(
+                "PIN_NOT_SUPPORTED_IN_DM",
+                "Discord DMs não suportam pin de mensagem (limitação da API). "
+                "Use /agendar ou marque manualmente — pin só funciona em canais de servidor.",
+                status=400,
+            )
         msg = await ch.fetch_message(int(body.message_id))
         await msg.pin()
+    except discord.NotFound as e:
+        await _emit_audit(request, "outbound_failed", {"op": "message.pin", "reason": "not_found"})
+        return json_error(
+            "UNKNOWN_MESSAGE",
+            f"Mensagem {body.message_id!r} não encontrada no canal {body.channel_id!r} "
+            "(Discord 10008).",
+            status=404,
+        )
+    except discord.Forbidden as e:
+        await _emit_audit(request, "outbound_failed", {"op": "message.pin", "reason": "forbidden"})
+        return json_error(
+            "FORBIDDEN_PIN",
+            "Bot não tem permissão Manage Messages neste canal (Discord 50013).",
+            status=403,
+        )
+    except discord.HTTPException as e:
+        await _emit_audit(request, "outbound_failed", {"op": "message.pin", "reason": "http"})
+        return json_error(
+            "UPSTREAM_ERROR",
+            f"Discord rejeitou pin (HTTP {e.status} code {getattr(e, 'code', '?')}).",
+            status=502,
+        )
     except Exception as e:
         logger.exception("message.pin failed")
         return json_error("UPSTREAM_ERROR", f"message.pin failed: {e}", status=502)
@@ -340,6 +380,46 @@ async def message_pin(request: web.Request) -> web.Response:
         {"op": "message.pin", "channel_id": body.channel_id, "message_id": body.message_id},
     )
     return web.json_response(MessagePinResponse().model_dump(mode="json"))
+
+
+async def message_edit(request: web.Request) -> web.Response:
+    try:
+        body: MessageEditRequest = await _parse_body(request, MessageEditRequest)
+    except _ResponseError as e:
+        return e.response
+    adapter = _get_adapter(request)
+    if adapter is None:
+        return _adapter_unavailable(request)
+    try:
+        await adapter.edit_message(
+            _channel(adapter, body.channel_id),
+            str(body.message_id),
+            body.text,
+        )
+    except CapabilityNotSupported as e:
+        await _emit_audit(request, "outbound_failed", {"op": "message.edit", "reason": "capability"})
+        return json_error("UPSTREAM_ERROR", e.message, status=502)
+    except (PermissionDenied, BotFoundationError) as e:
+        await _emit_audit(request, "outbound_failed", {"op": "message.edit", "reason": "denied"})
+        return json_error("FORBIDDEN", e.message, status=403)
+    except ProviderError as e:
+        await _emit_audit(request, "outbound_failed", {"op": "message.edit", "reason": "upstream"})
+        return json_error("UPSTREAM_ERROR", e.message, status=502)
+    except Exception:
+        logger.exception("message.edit failed")
+        return json_error("INTERNAL_ERROR", "unexpected failure", status=500)
+    payload = MessageEditResponse(
+        message_id=str(body.message_id),
+        channel_id=str(body.channel_id),
+        edited_at=datetime.now(timezone.utc),
+    )
+    await _emit_audit(
+        request,
+        "outbound_sent",
+        {"op": "message.edit", "channel_id": body.channel_id, "message_id": body.message_id},
+    )
+    _audit_outbound(request, "message.edit", ok=True, channel_id=body.channel_id, message_id=body.message_id)
+    return web.json_response(payload.model_dump(mode="json"))
 
 
 async def role_mention(request: web.Request) -> web.Response:
@@ -496,6 +576,7 @@ def register_routes(app: web.Application) -> None:
     app.router.add_post("/v1/outbound/discord/reaction.add", reaction_add)
     app.router.add_post("/v1/outbound/discord/thread.start", thread_start)
     app.router.add_post("/v1/outbound/discord/message.pin", message_pin)
+    app.router.add_post("/v1/outbound/discord/message.edit", message_edit)
     app.router.add_post("/v1/outbound/discord/role.mention", role_mention)
     app.router.add_post("/v1/outbound/whatsapp/send_template", whatsapp_send_template)
     app.router.add_get("/v1/users/{user_id}", get_user)

@@ -197,8 +197,8 @@ async def _run_provider(provider: str, guild_ids: Optional[List[int]] = None) ->
         try:
             from deile.cron.store import CronStore
             from deile.cron.runner import CronRunner
-            from deile.cron.agent_bridge import make_fire_callback  # may not exist yet
-            from deilebot.bridge.dm_tool import send_discord_dm  # legacy import
+            from deile.cron.agent_bridge import make_fire_callback
+            from deilebot.foundation.envelope import BotUser
 
             cron_db = Path(os.environ.get("DEILE_CRON_DB_PATH", "data/cron.db"))
             cron_store = CronStore(cron_db)
@@ -206,10 +206,28 @@ async def _run_provider(provider: str, guild_ids: Optional[List[int]] = None) ->
             async def _agent_provider():
                 return await agent_provider()
 
+            # In-process DM notifier — reuses the running adapter instead of
+            # spawning a 2nd discord.Client (which would conflict with the
+            # already-logged-in session and silently fail). Calls
+            # adapter.send_dm directly.
+            async def _loopback_notify_dm(user_id: str, text: str) -> dict:
+                try:
+                    target = BotUser(
+                        bot_user_id=f"transient-{user_id}",
+                        provider=adapter.name,
+                        provider_user_id=str(user_id),
+                        display_name="(unknown)",
+                    )
+                    msg_id = await adapter.send_dm(target, text)
+                    return {"ok": True, "message_id": str(msg_id), "error": None}
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("cron loopback DM failed for %s: %s", user_id, exc)
+                    return {"ok": False, "message_id": None, "error": str(exc)}
+
             cron_runner = CronRunner(
                 cron_store,
                 fire_callback=make_fire_callback(_agent_provider),
-                notify_dm=send_discord_dm,
+                notify_dm=_loopback_notify_dm,
             )
             await cron_runner.start()
             logger.info("CronRunner started")

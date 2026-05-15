@@ -92,17 +92,20 @@ class IdeaCog(commands.Cog):
         )
 
         # 2. Build AgentInvocation — bypass ingress pipeline for this structured action.
+        # Persona discord_developer (não 'developer') porque o invocação acontece
+        # no contexto Discord, mesmo que via slash command.
         inv = AgentInvocation(
             bot_user_id=f"discord-{author_id}",
-            persona="developer",
+            persona="discord_developer",
             forced_model=None,
             inbound_text=texto,
             extra_system_prompt=_EXTRA_SYSTEM_PROMPT,
             bot_context={
                 "provider": "discord",
                 "channel_id": str(ctx.channel.id),
-                "author_id": author_id,
-                "author_name": author_name,
+                "user_message_id": str(getattr(ctx, "message", None).id) if getattr(ctx, "message", None) else None,
+                "user_id": author_id,
+                "author_display_name": author_name,
                 "source": "slash:/ideia",
             },
             timeout_seconds=180,

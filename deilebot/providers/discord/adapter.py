@@ -99,6 +99,12 @@ class DiscordAdapter(ProviderAdapter):
                     if "AdminCog" not in cog_names:
                         from deilebot.providers.discord.cogs.admin_cog import AdminCog
                         await client.add_cog(AdminCog(client, self.runtime, self))
+                    if "StatusCog" not in cog_names:
+                        from deilebot.providers.discord.cogs.status_cog import StatusCog
+                        await client.add_cog(StatusCog(client, self.runtime, self))
+                    if "PrivacyCog" not in cog_names:
+                        from deilebot.providers.discord.cogs.privacy_cog import PrivacyCog
+                        await client.add_cog(PrivacyCog(client, self.runtime, self))
                     if "EventsCog" not in cog_names:
                         from deilebot.providers.discord.cogs.events_cog import EventsCog
                         await client.add_cog(EventsCog(client, self.runtime, self))
@@ -183,28 +189,111 @@ class DiscordAdapter(ProviderAdapter):
             raise CapabilityNotSupported(f"{self.name} cannot edit messages")
         if self._client is None:
             raise ProviderError("Discord client not started", context={})
+        import discord
         try:
             ch = self._client.get_channel(int(channel.provider_channel_id))
             if ch is None:
                 ch = await self._client.fetch_channel(int(channel.provider_channel_id))
             msg = await ch.fetch_message(int(message_id))
-            await msg.edit(content=new_text)
+        except discord.NotFound as e:
+            raise ProviderError(
+                f"edit: target not found (channel={channel.provider_channel_id!r}, "
+                f"message={message_id!r}) — Discord 10003/10008",
+                context={"discord_code": "UNKNOWN_TARGET"},
+            ) from e
+        except discord.Forbidden as e:
+            raise ProviderError(
+                f"edit: forbidden — bot needs access to channel/message "
+                "(Discord 50001/50013)",
+                context={"discord_code": "FORBIDDEN_TARGET"},
+            ) from e
         except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"edit failed: {e}", context={}) from e
+            raise ProviderError(f"edit: lookup failed: {e}", context={}) from e
+        try:
+            await msg.edit(content=new_text)
+        except discord.Forbidden as e:
+            # Editing requires the bot to be the author.
+            raise ProviderError(
+                f"edit: bot cannot edit this message — only messages authored "
+                "by the bot can be edited (Discord 50005)",
+                context={"discord_code": "CANNOT_EDIT_OTHER_USER"},
+            ) from e
+        except discord.HTTPException as e:
+            raise ProviderError(
+                f"edit: Discord rejected new content (HTTP {e.status} "
+                f"code {getattr(e, 'code', '?')}) — content > 2000 chars or empty?",
+                context={"discord_code": f"HTTP_{getattr(e, 'code', 'UNKNOWN')}"},
+            ) from e
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"edit: failed: {e}", context={}) from e
 
     async def react(self, channel: Channel, message_id: str, emoji: str) -> None:
         if not self.capabilities.can_react:
             raise CapabilityNotSupported(f"{self.name} cannot react")
         if self._client is None:
             raise ProviderError("Discord client not started", context={})
+        # Lazy import so the module loads even without discord.py installed.
+        import discord
+        # Custom emoji `<:name:id>` / `<a:name:id>` must be a PartialEmoji,
+        # not the raw string. Unicode emoji passes through unchanged.
+        emoji_arg: Any = emoji
+        if isinstance(emoji, str) and emoji.startswith("<") and emoji.endswith(">"):
+            try:
+                emoji_arg = discord.PartialEmoji.from_str(emoji)
+            except Exception:  # noqa: BLE001 — fallback to raw and let discord error
+                emoji_arg = emoji
         try:
             ch = self._client.get_channel(int(channel.provider_channel_id))
             if ch is None:
                 ch = await self._client.fetch_channel(int(channel.provider_channel_id))
-            msg = await ch.fetch_message(int(message_id))
-            await msg.add_reaction(emoji)
+        except discord.NotFound as e:
+            raise ProviderError(
+                f"react: channel {channel.provider_channel_id!r} not found "
+                "(Discord 10003 — wrong channel_id, or bot has no access)",
+                context={"discord_code": "UNKNOWN_CHANNEL"},
+            ) from e
+        except discord.Forbidden as e:
+            raise ProviderError(
+                f"react: bot is forbidden from channel {channel.provider_channel_id!r} "
+                "(Discord 50001 — missing access)",
+                context={"discord_code": "FORBIDDEN_CHANNEL"},
+            ) from e
         except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"react failed: {e}", context={}) from e
+            raise ProviderError(f"react: channel lookup failed: {e}", context={}) from e
+        try:
+            msg = await ch.fetch_message(int(message_id))
+        except discord.NotFound as e:
+            raise ProviderError(
+                f"react: message {message_id!r} not found in this channel "
+                "(Discord 10008 — wrong message_id, or message in another channel)",
+                context={"discord_code": "UNKNOWN_MESSAGE"},
+            ) from e
+        except discord.Forbidden as e:
+            raise ProviderError(
+                f"react: bot cannot read message history in this channel "
+                "(Discord 50001/50013 — needs Read Message History)",
+                context={"discord_code": "FORBIDDEN_HISTORY"},
+            ) from e
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"react: message lookup failed: {e}", context={}) from e
+        try:
+            await msg.add_reaction(emoji_arg)
+        except discord.Forbidden as e:
+            raise ProviderError(
+                f"react: bot cannot add reactions in this channel "
+                "(Discord 50013 — needs Add Reactions)",
+                context={"discord_code": "FORBIDDEN_REACT"},
+            ) from e
+        except discord.HTTPException as e:
+            # 50035 Invalid Form Body covers malformed emoji
+            raise ProviderError(
+                f"react: emoji {emoji!r} rejected by Discord (HTTP {e.status} "
+                f"code {getattr(e, 'code', '?')}) — use unicode emoji or valid "
+                "<:name:id>/<a:name:id> from a guild the bot is in",
+                context={"discord_code": f"HTTP_{getattr(e, 'code', 'UNKNOWN')}"},
+            ) from e
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"react: add_reaction failed: {e}", context={}) from e
 
     async def send_dm(
         self,

@@ -112,6 +112,21 @@ class MessagePinResponse(_Strict):
     ok: bool = True
 
 
+# -- message.edit -------------------------------------------------------------
+
+
+class MessageEditRequest(_Strict):
+    channel_id: str
+    message_id: str
+    text: str
+
+
+class MessageEditResponse(_Strict):
+    message_id: str
+    channel_id: str
+    edited_at: datetime
+
+
 # -- role.mention -------------------------------------------------------------
 
 
