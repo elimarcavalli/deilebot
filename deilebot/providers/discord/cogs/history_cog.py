@@ -360,6 +360,7 @@ class HistoryCog(commands.Cog):
         name="historico_users",
         description="(admin) Lista bot_users registrados — count + last_seen",
     )
+    @app_commands.default_permissions(administrator=True)
     async def historico_users(self, ctx: commands.Context) -> None:
         await ctx.defer(ephemeral=True)
         if not self._is_owner(ctx.author.id):
@@ -392,6 +393,7 @@ class HistoryCog(commands.Cog):
         name="historico_canais",
         description="(admin) Lista canais (DM + GROUP) que o bot tocou — count + last_msg",
     )
+    @app_commands.default_permissions(administrator=True)
     async def historico_canais(self, ctx: commands.Context) -> None:
         await ctx.defer(ephemeral=True)
         if not self._is_owner(ctx.author.id):
@@ -477,6 +479,7 @@ class HistoryCog(commands.Cog):
         name="memoria",
         description="(admin) Working memory do agente DEILE para um user",
     )
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         user_id="bot_user_id ULID, 'discord:<id>' ou snowflake — em branco = você",
     )

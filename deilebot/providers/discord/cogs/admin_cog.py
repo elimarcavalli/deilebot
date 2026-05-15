@@ -38,6 +38,7 @@ class AdminCog(commands.Cog):
 
     # -------- DLQ --------
     @commands.hybrid_group(name="dlq", description="DLQ ops (owner only)")
+    @app_commands.default_permissions(administrator=True)
     async def dlq(self, ctx: commands.Context):
         if ctx.invoked_subcommand is None:
             await ctx.send("usage: /dlq list|replay|purge")
@@ -66,6 +67,7 @@ class AdminCog(commands.Cog):
 
     # -------- Forget (privacy) --------
     @commands.hybrid_command(name="forget", description="Delete a user's history (owner only)")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(bot_user_id="Target bot_user_id")
     async def forget(self, ctx: commands.Context, bot_user_id: str):
         if not await self._is_owner(ctx):
@@ -77,6 +79,7 @@ class AdminCog(commands.Cog):
 
     # -------- Sessions (DEILE side) --------
     @commands.hybrid_group(name="sessions", description="DEILE session ops (owner only)")
+    @app_commands.default_permissions(administrator=True)
     async def sessions(self, ctx: commands.Context):
         if ctx.invoked_subcommand is None:
             await ctx.send("usage: /sessions list|purge")
@@ -98,6 +101,7 @@ class AdminCog(commands.Cog):
 
     # -------- Metrics --------
     @commands.hybrid_command(name="metrics", description="Snapshot of MetricsCollector (owner only)")
+    @app_commands.default_permissions(administrator=True)
     async def metrics(self, ctx: commands.Context):
         if not await self._is_owner(ctx):
             await ctx.send("⛔ owner only")
@@ -108,6 +112,7 @@ class AdminCog(commands.Cog):
 
     # -------- Audit --------
     @commands.hybrid_command(name="audit", description="Recent audit entries (owner only)")
+    @app_commands.default_permissions(administrator=True)
     async def audit(self, ctx: commands.Context, limit: int = 25):
         if not await self._is_owner(ctx):
             await ctx.send("⛔ owner only")
