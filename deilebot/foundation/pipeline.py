@@ -498,10 +498,19 @@ class IngressPipeline:
         # UX premium: react 🔧 imediatamente para sinalizar "recebi"
         # (best-effort; cooldown não-fatal). E typing keep-alive em loop
         # enquanto o agent processa, pra não morrer em 10s.
-        try:
-            await adapter.react(env.channel, env.message_id, "🔧")
-        except Exception:
-            self._logger.debug("inbound react ignored", exc_info=True)
+        #
+        # Slash-command inbound (e.g. /deile prompt:X) traz um message_id
+        # sintético (não existe no Discord) — pular as reactions evita
+        # ruído UNKNOWN_MESSAGE no log e tentativas inúteis.
+        _is_slash = (
+            str(env.message_id or "").startswith("slash-")
+            or str((env.raw or {}).get("source", "")).startswith("slash:")
+        )
+        if not _is_slash:
+            try:
+                await adapter.react(env.channel, env.message_id, "🔧")
+            except Exception:
+                self._logger.debug("inbound react ignored", exc_info=True)
 
         async def _typing_keepalive(stop_evt: "asyncio.Event") -> None:
             while not stop_evt.is_set():
@@ -540,10 +549,11 @@ class IngressPipeline:
                 payload={"error": str(e)[:200], "type": type(e).__name__},
             )
             # UX: react ❌ pra sinalizar erro + fallback expressivo com tipo do erro
-            try:
-                await adapter.react(env.channel, env.message_id, "❌")
-            except Exception:
-                pass
+            if not _is_slash:
+                try:
+                    await adapter.react(env.channel, env.message_id, "❌")
+                except Exception:
+                    pass
             err_type = type(e).__name__
             if "Timeout" in err_type:
                 reason = f"timeout — pedido demorou demais; tente algo menor"
@@ -562,10 +572,11 @@ class IngressPipeline:
                 pass
 
         # UX: react ✅ no envelope inbound depois do sucesso
-        try:
-            await adapter.react(env.channel, env.message_id, "✅")
-        except Exception:
-            self._logger.debug("success react ignored", exc_info=True)
+        if not _is_slash:
+            try:
+                await adapter.react(env.channel, env.message_id, "✅")
+            except Exception:
+                self._logger.debug("success react ignored", exc_info=True)
         await self.audit.log(
             AuditEventType.AGENT_RESPONDED,
             user=user,
