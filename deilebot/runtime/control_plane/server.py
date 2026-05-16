@@ -81,6 +81,12 @@ class ControlPlaneServer:
         # operator-visible counters (e.g. bot_whatsapp_conversations_total).
         # Left as None when the daemon does not need metrics.
         self.metrics: Optional[Any] = None
+        # Optional refs used by the /v1/test/simulate harness — when wired,
+        # the simulate endpoint can drive the FULL ingress pipeline as if
+        # a Discord message arrived. Left as None in deployments that do
+        # not want the harness exposed.
+        self.pipeline: Optional[Any] = None
+        self.runtime: Optional[Any] = None
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.BaseSite] = None

@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import aiosqlite
 
@@ -377,6 +377,75 @@ class ConversationStore:
             await db.commit()
             return removed
 
+    async def delete_user_history(self, bot_user_id: str) -> Dict[str, int]:
+        """Delete a user's conversation history so the bot truly forgets them.
+
+        ``purge_user_messages`` only removes rows ``WHERE bot_user_id = ?`` —
+        in a DM that drops the user's inbound but LEAVES the bot's outbound,
+        and :meth:`get_recent_messages` (the per-channel window the agent
+        and the intent classifier read) would still surface half the
+        conversation. This method fixes that:
+
+        - For channels where this user is the ONLY non-bot participant
+          (every DM, plus any single-user thread) it deletes EVERY message
+          — inbound and outbound — because the whole channel is private to
+          that user.
+        - For shared channels (other humans posted there too) it deletes
+          only this user's own inbound rows; other people's data survives.
+
+        ``attachment`` rows cascade via the ``ON DELETE CASCADE`` FK.
+        Returns ``{"messages": <total deleted>, "private_channels": <count>}``.
+        """
+        async with self._lock:
+            db = self._require_db()
+            cursor = await db.execute(
+                "SELECT DISTINCT provider, provider_channel_id FROM message "
+                "WHERE bot_user_id = ? AND direction = 'inbound'",
+                (bot_user_id,),
+            )
+            channels = await cursor.fetchall()
+            await cursor.close()
+
+            deleted = 0
+            private_channels = 0
+            for provider, channel_id in channels:
+                # Count distinct NON-bot inbound senders in this channel.
+                # 1 ⇒ the channel belongs exclusively to this user.
+                cursor = await db.execute(
+                    """
+                    SELECT COUNT(DISTINCT m.bot_user_id)
+                    FROM message m
+                    LEFT JOIN bot_user u ON u.bot_user_id = m.bot_user_id
+                    WHERE m.provider = ? AND m.provider_channel_id = ?
+                      AND m.direction = 'inbound'
+                      AND COALESCE(u.is_bot, 0) = 0
+                    """,
+                    (provider, channel_id),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                human_senders = (row[0] if row else 0) or 0
+
+                if human_senders <= 1:
+                    cursor = await db.execute(
+                        "DELETE FROM message "
+                        "WHERE provider = ? AND provider_channel_id = ?",
+                        (provider, channel_id),
+                    )
+                    private_channels += 1
+                else:
+                    cursor = await db.execute(
+                        "DELETE FROM message "
+                        "WHERE provider = ? AND provider_channel_id = ? "
+                        "AND bot_user_id = ? AND direction = 'inbound'",
+                        (provider, channel_id, bot_user_id),
+                    )
+                deleted += cursor.rowcount or 0
+                await cursor.close()
+
+            await db.commit()
+            return {"messages": deleted, "private_channels": private_channels}
+
     async def insert_audit(
         self,
         event_type: str,
@@ -601,3 +670,274 @@ class ConversationStore:
             scope=ChannelScope(row[1]),
             parent_channel_id=row[2],
         )
+
+    # ------------------------------------------------------------------
+    # History introspection — used by HistoryCog.
+    # Read-only adds; existing APIs untouched.
+    # ------------------------------------------------------------------
+
+    async def list_users(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return every bot_user with message count and last_seen_at.
+
+        Sorted by last_seen DESC. Used by /historico_canais (admin) so the
+        owner can pick a user to inspect.
+        """
+        db = self._require_db()
+        cursor = await db.execute(
+            """
+            SELECT u.bot_user_id, u.provider, u.provider_user_id, u.display_name,
+                   u.last_seen_at,
+                   (SELECT COUNT(*) FROM message m WHERE m.bot_user_id = u.bot_user_id) AS msg_count
+            FROM bot_user u
+            ORDER BY u.last_seen_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [
+            {
+                "bot_user_id": r[0],
+                "provider": r[1],
+                "provider_user_id": r[2],
+                "display_name": r[3],
+                "last_seen_at": r[4],
+                "msg_count": r[5],
+            }
+            for r in rows
+        ]
+
+    async def list_messages_by_user(
+        self,
+        bot_user_id: str,
+        *,
+        limit: int = 30,
+        search: Optional[str] = None,
+    ) -> List[StoredMessage]:
+        """Return messages for a given bot_user, newest first.
+
+        Used by /historico [user_id]. ``search`` does a case-insensitive
+        LIKE on the text column when provided.
+        """
+        db = self._require_db()
+        if search:
+            cursor = await db.execute(
+                """
+                SELECT id, provider, provider_channel_id, provider_message_id,
+                       direction, bot_user_id, text, reply_to_message_id,
+                       sent_at, persisted_at
+                FROM message
+                WHERE bot_user_id = ? AND text LIKE ? COLLATE NOCASE
+                ORDER BY sent_at DESC, id DESC
+                LIMIT ?
+                """,
+                (bot_user_id, f"%{search}%", limit),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                SELECT id, provider, provider_channel_id, provider_message_id,
+                       direction, bot_user_id, text, reply_to_message_id,
+                       sent_at, persisted_at
+                FROM message
+                WHERE bot_user_id = ?
+                ORDER BY sent_at DESC, id DESC
+                LIMIT ?
+                """,
+                (bot_user_id, limit),
+            )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        out: List[StoredMessage] = []
+        for r in rows:
+            out.append(
+                StoredMessage(
+                    id=r[0],
+                    provider=r[1],
+                    provider_channel_id=r[2],
+                    provider_message_id=r[3],
+                    direction=r[4],
+                    bot_user_id=r[5],
+                    text=r[6],
+                    reply_to_message_id=r[7],
+                    sent_at=datetime.fromisoformat(r[8].replace("Z", "+00:00"))
+                    if r[8] and "T" in r[8]
+                    else datetime.now(timezone.utc),
+                    persisted_at=datetime.fromisoformat(r[9].replace("Z", "+00:00"))
+                    if r[9] and "T" in r[9]
+                    else datetime.now(timezone.utc),
+                )
+            )
+        return out
+
+    async def count_messages_by_user(self, bot_user_id: str) -> int:
+        db = self._require_db()
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM message WHERE bot_user_id = ?", (bot_user_id,)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row[0] if row else 0
+
+    async def get_user_by_bot_user_id(self, bot_user_id: str) -> Optional[BotUser]:
+        db = self._require_db()
+        cursor = await db.execute(
+            "SELECT bot_user_id, provider, provider_user_id, display_name, is_bot "
+            "FROM bot_user WHERE bot_user_id = ?",
+            (bot_user_id,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return None
+        return BotUser(
+            bot_user_id=row[0],
+            provider=row[1],
+            provider_user_id=row[2],
+            display_name=row[3],
+            is_bot=bool(row[4]),
+        )
+
+    async def list_channels(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return every channel the bot has touched, with msg count + last activity.
+
+        Uses the ``message`` table as source of truth (some channels may
+        have been seen without being persisted in the ``channel`` table —
+        the LEFT JOIN keeps them visible). ``participant_names`` is a
+        comma-joined string of distinct ``bot_user.display_name`` for
+        every non-bot user that talked in the channel — crucial for DM
+        labels (where ``channel.name`` is NULL but the counterpart is
+        the obvious identifier).  Sorted by last message DESC.
+        """
+        db = self._require_db()
+        cursor = await db.execute(
+            """
+            SELECT m.provider, m.provider_channel_id,
+                   COUNT(*) AS msg_count,
+                   MAX(m.sent_at) AS last_msg_at,
+                   c.name, c.scope, c.parent_channel_id,
+                   (
+                     SELECT GROUP_CONCAT(DISTINCT u.display_name)
+                     FROM message m2
+                     JOIN bot_user u ON u.bot_user_id = m2.bot_user_id
+                     WHERE m2.provider = m.provider
+                       AND m2.provider_channel_id = m.provider_channel_id
+                       AND COALESCE(u.is_bot, 0) = 0
+                   ) AS participant_names
+            FROM message m
+            LEFT JOIN channel c
+              ON c.provider = m.provider
+             AND c.provider_channel_id = m.provider_channel_id
+            GROUP BY m.provider, m.provider_channel_id
+            ORDER BY last_msg_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [
+            {
+                "provider": r[0],
+                "provider_channel_id": r[1],
+                "msg_count": r[2],
+                "last_msg_at": r[3],
+                "name": r[4],
+                "scope": r[5],
+                "parent_channel_id": r[6],
+                "participant_names": r[7],
+            }
+            for r in rows
+        ]
+
+    async def get_display_names_for_users(
+        self, bot_user_ids: List[str]
+    ) -> Dict[str, str]:
+        """Bulk-resolve display names for a list of bot_user_ids.
+
+        Used by the history rendering layer to label each message line
+        with WHO sent it — particularly useful in GROUP channels where
+        multiple bot_users can post. Returns an empty mapping for empty
+        input; missing ids are simply absent from the returned dict.
+        """
+        if not bot_user_ids:
+            return {}
+        unique = list({bid for bid in bot_user_ids if bid})
+        if not unique:
+            return {}
+        db = self._require_db()
+        placeholders = ",".join("?" for _ in unique)
+        cursor = await db.execute(
+            f"SELECT bot_user_id, display_name FROM bot_user "
+            f"WHERE bot_user_id IN ({placeholders})",
+            unique,
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return {r[0]: (r[1] or "?") for r in rows}
+
+    async def list_messages_by_channel(
+        self,
+        provider: str,
+        provider_channel_id: str,
+        *,
+        limit: int = 30,
+        search: Optional[str] = None,
+    ) -> List[StoredMessage]:
+        """Return messages for a given channel, newest first.
+
+        ``search`` does a case-insensitive LIKE on the text column when
+        provided. Mirrors :meth:`list_messages_by_user` but channel-keyed.
+        """
+        db = self._require_db()
+        if search:
+            cursor = await db.execute(
+                """
+                SELECT id, provider, provider_channel_id, provider_message_id,
+                       direction, bot_user_id, text, reply_to_message_id,
+                       sent_at, persisted_at
+                FROM message
+                WHERE provider = ? AND provider_channel_id = ?
+                  AND text LIKE ? COLLATE NOCASE
+                ORDER BY sent_at DESC, id DESC
+                LIMIT ?
+                """,
+                (provider, provider_channel_id, f"%{search}%", limit),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                SELECT id, provider, provider_channel_id, provider_message_id,
+                       direction, bot_user_id, text, reply_to_message_id,
+                       sent_at, persisted_at
+                FROM message
+                WHERE provider = ? AND provider_channel_id = ?
+                ORDER BY sent_at DESC, id DESC
+                LIMIT ?
+                """,
+                (provider, provider_channel_id, limit),
+            )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        out: List[StoredMessage] = []
+        for r in rows:
+            out.append(
+                StoredMessage(
+                    id=r[0],
+                    provider=r[1],
+                    provider_channel_id=r[2],
+                    provider_message_id=r[3],
+                    direction=r[4],
+                    bot_user_id=r[5],
+                    text=r[6],
+                    reply_to_message_id=r[7],
+                    sent_at=datetime.fromisoformat(r[8].replace("Z", "+00:00"))
+                    if r[8] and "T" in r[8]
+                    else datetime.now(timezone.utc),
+                    persisted_at=datetime.fromisoformat(r[9].replace("Z", "+00:00"))
+                    if r[9] and "T" in r[9]
+                    else datetime.now(timezone.utc),
+                )
+            )
+        return out

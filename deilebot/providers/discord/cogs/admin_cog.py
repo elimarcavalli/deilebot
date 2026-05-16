@@ -38,6 +38,7 @@ class AdminCog(commands.Cog):
 
     # -------- DLQ --------
     @commands.hybrid_group(name="dlq", description="DLQ ops (owner only)")
+    @app_commands.default_permissions(administrator=True)
     async def dlq(self, ctx: commands.Context):
         if ctx.invoked_subcommand is None:
             await ctx.send("usage: /dlq list|replay|purge")
@@ -65,18 +66,38 @@ class AdminCog(commands.Cog):
         await ctx.send(f"removed {removed} entries")
 
     # -------- Forget (privacy) --------
-    @commands.hybrid_command(name="forget", description="Delete a user's history (owner only)")
-    @app_commands.describe(bot_user_id="Target bot_user_id")
+    @commands.hybrid_command(
+        name="forget",
+        description="Delete a user's history + agent memory (owner only)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(bot_user_id="Target bot_user_id (ULID)")
     async def forget(self, ctx: commands.Context, bot_user_id: str):
         if not await self._is_owner(ctx):
             await ctx.send("⛔ owner only")
             return
-        store = self.runtime.pipeline.store
-        removed = await store.purge_user_messages(bot_user_id)
-        await ctx.send(f"deleted {removed} messages for {bot_user_id}")
+        from deilebot.foundation.memory_ops import forget_user
+
+        pipeline = self.runtime.pipeline
+        result = await forget_user(
+            store=pipeline.store,
+            bridge=pipeline.bridge,
+            bot_user_id=bot_user_id,
+        )
+        msg = (
+            f"🧹 forget `{bot_user_id}` — "
+            f"{result.messages_deleted} msg(s) em "
+            f"{result.private_channels} conversa(s) privada(s); "
+            f"sessão RAM={'sim' if result.session_in_memory_evicted else 'não'}, "
+            f"sessão persistida={'sim' if result.session_persisted_deleted else 'não'}"
+        )
+        if result.errors:
+            msg += "\n⚠️ " + "; ".join(result.errors)
+        await ctx.send(msg)
 
     # -------- Sessions (DEILE side) --------
     @commands.hybrid_group(name="sessions", description="DEILE session ops (owner only)")
+    @app_commands.default_permissions(administrator=True)
     async def sessions(self, ctx: commands.Context):
         if ctx.invoked_subcommand is None:
             await ctx.send("usage: /sessions list|purge")
@@ -98,6 +119,7 @@ class AdminCog(commands.Cog):
 
     # -------- Metrics --------
     @commands.hybrid_command(name="metrics", description="Snapshot of MetricsCollector (owner only)")
+    @app_commands.default_permissions(administrator=True)
     async def metrics(self, ctx: commands.Context):
         if not await self._is_owner(ctx):
             await ctx.send("⛔ owner only")
@@ -108,6 +130,7 @@ class AdminCog(commands.Cog):
 
     # -------- Audit --------
     @commands.hybrid_command(name="audit", description="Recent audit entries (owner only)")
+    @app_commands.default_permissions(administrator=True)
     async def audit(self, ctx: commands.Context, limit: int = 25):
         if not await self._is_owner(ctx):
             await ctx.send("⛔ owner only")
