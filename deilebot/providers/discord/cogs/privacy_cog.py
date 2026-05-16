@@ -1,7 +1,14 @@
 """PrivacyCog — comandos públicos de privacidade do USER (não-owner).
 
-`/forget_me` apaga histórico do próprio user (mensagens, sessions DEILE).
-Atende GDPR/LGPD self-service. Não exige permissão owner.
+`/forget_me` apaga TODO o rastro de memória do próprio user:
+- o transcript do conversation_store (mensagens, ambos os lados em DMs);
+- a ``AgentSession`` viva do agente embutido (working memory em RAM);
+- a sessão persistida do agente (a que sobrevive a um restart).
+
+Atende GDPR/LGPD self-service e não exige permissão de owner. A lógica
+compartilhada vive em ``deilebot.foundation.memory_ops.forget_user`` — o
+MESMO código que `/forget` (admin) e o harness `/v1/test/simulate`
+exercitam, então teste e produção nunca divergem.
 """
 
 from __future__ import annotations
@@ -11,6 +18,8 @@ from typing import Any
 
 import discord
 from discord.ext import commands
+
+from deilebot.foundation.memory_ops import forget_user
 
 logger = logging.getLogger("deilebot.cogs.privacy")
 
@@ -23,59 +32,61 @@ class PrivacyCog(commands.Cog):
 
     @commands.hybrid_command(
         name="forget_me",
-        description="Apaga seu histórico (mensagens, sessões) do bot",
+        description="Apaga TODO o seu histórico e memória do bot (mensagens + sessão)",
     )
     async def forget_me(self, ctx: commands.Context) -> None:
         await ctx.defer(ephemeral=True)
-        provider_user_id = str(ctx.author.id)
-        deleted_msgs = 0
-        deleted_sessions = 0
+        pipeline = self.runtime.pipeline
+        store = pipeline.store
 
-        # 1. Apagar mensagens do conversation_store
-        try:
-            store = self.runtime.pipeline.store
-            user = await store.get_user_by_provider("discord", provider_user_id)
-            if user is not None and hasattr(store, "delete_messages_for"):
-                deleted_msgs = await store.delete_messages_for(user.bot_user_id)
-            elif user is not None:
-                # Fallback: raw SQL on the inner sqlite (best-effort).
-                import sqlite3
-                import os
-                sqlite_path = os.environ.get(
-                    "DEILE_BOT_SQLITE_PATH", "/home/deile/data/deilebot.sqlite"
-                )
-                conn = sqlite3.connect(sqlite_path)
-                try:
-                    cur = conn.execute(
-                        "DELETE FROM message WHERE bot_user_id = ?", (user.bot_user_id,)
-                    )
-                    conn.commit()
-                    deleted_msgs = cur.rowcount or 0
-                finally:
-                    conn.close()
-        except Exception as exc:
-            logger.warning("forget_me message delete failed: %s", exc, exc_info=True)
+        user = await store.get_user_by_provider_id("discord", str(ctx.author.id))
+        if user is None:
+            # Nenhum bot_user ⇒ nada foi persistido ⇒ nada a esquecer.
+            embed = discord.Embed(
+                title="🧹 Nada para apagar",
+                color=0x57F287,
+                description=(
+                    "Não encontrei nenhum histórico seu do meu lado — "
+                    "você já está esquecido. 🙂"
+                ),
+            )
+            await ctx.send(embed=embed, ephemeral=True)
+            return
 
-        # 2. Apagar session DEILE
-        try:
-            agent_provider = getattr(self.runtime.pipeline.bridge, "_agent_provider", None)
-            if agent_provider is not None:
-                agent = await agent_provider()
-                session_id = f"bot_session_{user.bot_user_id}" if user else None
-                if session_id and hasattr(agent, "delete_session"):
-                    await agent.delete_session(session_id)
-                    deleted_sessions = 1
-        except Exception as exc:
-            logger.warning("forget_me session delete failed: %s", exc, exc_info=True)
+        result = await forget_user(
+            store=store,
+            bridge=pipeline.bridge,
+            bot_user_id=user.bot_user_id,
+        )
+
+        lines = [
+            f"Apaguei **{result.messages_deleted}** mensagem(ns) "
+            f"em **{result.private_channels}** conversa(s) privada(s)."
+        ]
+        if result.session_cleared:
+            lines.append(
+                "Limpei também minha **memória de trabalho** sobre você "
+                "(sessão viva + persistida) — no próximo papo eu começo do zero."
+            )
+        else:
+            lines.append("Não havia memória de trabalho ativa sobre você.")
+        lines.append(
+            "O Discord ainda mantém o histórico no chat do seu cliente — "
+            "isso é fora do meu controle."
+        )
+
+        color = 0x57F287
+        if result.errors:
+            color = 0xFEE75C
+            logger.warning("forget_me partial failure: %s", result.errors)
+            lines.append(
+                "⚠️ Alguns passos falharam — avise o operador: "
+                + "; ".join(result.errors)
+            )
 
         embed = discord.Embed(
             title="🧹 Memória limpa",
-            color=0x57F287,
-            description=(
-                f"Apaguei **{deleted_msgs}** mensagem(ns) e "
-                f"**{deleted_sessions}** sessão(ões) do meu lado.\n"
-                "O Discord ainda mantém o histórico no chat do seu cliente — "
-                "isso é fora do meu controle."
-            ),
+            color=color,
+            description="\n".join(lines),
         )
         await ctx.send(embed=embed, ephemeral=True)

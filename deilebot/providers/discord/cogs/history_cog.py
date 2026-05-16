@@ -498,12 +498,18 @@ class HistoryCog(commands.Cog):
             await ctx.send(f"❌ User `{user_id or 'self'}` não encontrado.", ephemeral=True)
             return
 
-        sessions_path = Path(
-            os.environ.get(
-                "DEILE_BOT_SESSIONS_SQLITE_PATH",
-                "/home/deile/data/deile_sessions.sqlite",
+        # Resolve from settings so /memoria reads the EXACT DB the agent
+        # writes to (and the same one memory_ops wipes). Env-var fallback
+        # only when settings are unavailable.
+        try:
+            sessions_path = Path(get_bot_settings().foundation.sessions_sqlite_path)
+        except Exception:  # noqa: BLE001
+            sessions_path = Path(
+                os.environ.get(
+                    "DEILE_BOT_SESSIONS_SQLITE_PATH",
+                    "/home/deile/data/deile_sessions.sqlite",
+                )
             )
-        )
         if not sessions_path.exists():
             await ctx.send(
                 f"❌ DB de sessões não existe em `{sessions_path}`.",

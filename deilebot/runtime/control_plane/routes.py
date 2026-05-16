@@ -575,12 +575,16 @@ async def test_simulate(request: web.Request) -> web.Response:
     Body::
         {
           "prompt": "<text the user would have typed>",
-          "source": "dm" | "slash",     # default "dm"
+          "source": "dm" | "slash" | "forget",  # default "dm"
           "user_id": "<discord snowflake>",     # required
           "display_name": "<name>",     # default "test-user"
-          "channel_id": "<discord snowflake>",  # required
+          "channel_id": "<discord snowflake>",  # required (not for "forget")
           "channel_scope": "DM" | "GROUP" | "THREAD",   # default "DM"
         }
+
+    ``source="forget"`` runs the shared ``forget_user`` privacy wipe for
+    ``user_id`` (no prompt/channel needed) and returns the deletion
+    breakdown — used to regression-test ``/forget_me``.
 
     Returns the canonical pipeline result envelope::
         {
@@ -615,13 +619,18 @@ async def test_simulate(request: web.Request) -> web.Response:
     prompt = str(body.get("prompt") or "").strip()
     user_id = str(body.get("user_id") or "").strip()
     channel_id = str(body.get("channel_id") or "").strip()
-    if not prompt or not user_id or not channel_id:
+    source = str(body.get("source") or "dm").lower()
+    # ``forget`` exercises the privacy wipe — it needs only ``user_id``.
+    # Every other source replays a message, so prompt + channel are required.
+    if source == "forget":
+        if not user_id:
+            return json_error("BAD_REQUEST", "user_id is required", status=400)
+    elif not prompt or not user_id or not channel_id:
         return json_error(
             "BAD_REQUEST",
             "prompt, user_id and channel_id are all required",
             status=400,
         )
-    source = str(body.get("source") or "dm").lower()
     display_name = str(body.get("display_name") or "test-user")
     scope_str = str(body.get("channel_scope") or "DM").upper()
     try:
@@ -635,6 +644,48 @@ async def test_simulate(request: web.Request) -> web.Response:
     start = time.monotonic()
     error: Optional[str] = None
     extra: dict = {}
+
+    if source == "forget":
+        # Exercise the EXACT shared forget_user core that /forget_me runs.
+        from deilebot.foundation.memory_ops import forget_user
+
+        identity = pipeline.identity
+        try:
+            real_user = await identity.resolve(
+                provider="discord",
+                provider_user_id=user_id,
+                display_name=display_name,
+            )
+            result = await asyncio.wait_for(
+                forget_user(
+                    store=pipeline.store,
+                    bridge=pipeline.bridge,
+                    bot_user_id=real_user.bot_user_id,
+                ),
+                timeout=60.0,
+            )
+            extra["bot_user_id"] = real_user.bot_user_id
+            extra["messages_deleted"] = result.messages_deleted
+            extra["private_channels"] = result.private_channels
+            extra["session_in_memory_evicted"] = result.session_in_memory_evicted
+            extra["session_persisted_deleted"] = result.session_persisted_deleted
+            extra["forget_errors"] = result.errors
+            if result.errors:
+                error = "; ".join(result.errors)
+        except asyncio.TimeoutError:
+            error = "timeout"
+        except Exception as exc:  # noqa: BLE001
+            error = f"{type(exc).__name__}: {exc}"
+            logger.exception("test_simulate(forget): raised")
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return web.json_response({
+            "ok": error is None,
+            "elapsed_ms": elapsed_ms,
+            "error": error,
+            "user_id": user_id,
+            "source": source,
+            **extra,
+        })
 
     if source == "slash":
         # Exercise the EXACT same code path as the real /deile cog —

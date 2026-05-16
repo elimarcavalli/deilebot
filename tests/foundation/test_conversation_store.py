@@ -152,6 +152,94 @@ class TestMessages:
         assert removed == 1
 
 
+class TestDeleteUserHistory:
+    """delete_user_history — the privacy wipe behind /forget_me + /forget."""
+
+    async def test_dm_wipes_both_directions(self, store):
+        # In a DM the whole channel is private to the one user, so BOTH the
+        # user's inbound AND the bot's outbound must go — otherwise the
+        # per-channel window still leaks half the conversation back.
+        u = make_user(provider_user_id="1", display_name="elimar")
+        bot = make_user(provider_user_id="bot", display_name="DEILE", is_bot=True)
+        dm = make_channel(scope=ChannelScope.DM, provider_channel_id="dm-1")
+        await store.upsert_user(u)
+        await store.upsert_user(bot)
+        await store.upsert_channel(dm)
+        await store.record_inbound(
+            make_envelope(channel=dm, author=u, message_id="in-1", text="oi")
+        )
+        await store.record_outbound(
+            "fake", dm, "out-1", bot.bot_user_id, "olá!",
+            reply_to=None, sent_at=datetime.now(timezone.utc),
+        )
+        counts = await store.delete_user_history(u.bot_user_id)
+        assert counts == {"messages": 2, "private_channels": 1}
+        assert await store.get_recent_messages("fake", dm) == []
+
+    async def test_shared_channel_keeps_other_users(self, store):
+        # A GROUP where two humans posted — only the target user's own
+        # inbound goes; the other human's message and the bot's survive.
+        u1 = make_user(provider_user_id="1", display_name="elimar")
+        u2 = make_user(provider_user_id="2", display_name="bob")
+        bot = make_user(provider_user_id="bot", display_name="DEILE", is_bot=True)
+        ch = make_channel(scope=ChannelScope.GROUP, provider_channel_id="grp-1")
+        for x in (u1, u2, bot):
+            await store.upsert_user(x)
+        await store.upsert_channel(ch)
+        await store.record_inbound(
+            make_envelope(channel=ch, author=u1, message_id="g-u1", text="u1 here")
+        )
+        await store.record_inbound(
+            make_envelope(channel=ch, author=u2, message_id="g-u2", text="u2 here")
+        )
+        await store.record_outbound(
+            "fake", ch, "g-bot", bot.bot_user_id, "bot here",
+            reply_to=None, sent_at=datetime.now(timezone.utc),
+        )
+        counts = await store.delete_user_history(u1.bot_user_id)
+        assert counts == {"messages": 1, "private_channels": 0}
+        remaining = {m.text for m in await store.get_recent_messages("fake", ch)}
+        assert remaining == {"u2 here", "bot here"}
+
+    async def test_no_history_is_idempotent(self, store):
+        u = make_user(provider_user_id="ghost")
+        await store.upsert_user(u)
+        counts = await store.delete_user_history(u.bot_user_id)
+        assert counts == {"messages": 0, "private_channels": 0}
+
+    async def test_mixed_private_and_shared(self, store):
+        # The user has a private DM AND posts in a shared group: the DM is
+        # wiped whole, the group loses only the user's own inbound.
+        u = make_user(provider_user_id="1", display_name="elimar")
+        other = make_user(provider_user_id="2", display_name="bob")
+        bot = make_user(provider_user_id="bot", display_name="DEILE", is_bot=True)
+        dm = make_channel(scope=ChannelScope.DM, provider_channel_id="dm-x")
+        grp = make_channel(scope=ChannelScope.GROUP, provider_channel_id="grp-x")
+        for x in (u, other, bot):
+            await store.upsert_user(x)
+        for c in (dm, grp):
+            await store.upsert_channel(c)
+        await store.record_inbound(
+            make_envelope(channel=dm, author=u, message_id="dm-in", text="dm msg")
+        )
+        await store.record_outbound(
+            "fake", dm, "dm-out", bot.bot_user_id, "dm reply",
+            reply_to=None, sent_at=datetime.now(timezone.utc),
+        )
+        await store.record_inbound(
+            make_envelope(channel=grp, author=u, message_id="grp-in", text="grp msg")
+        )
+        await store.record_inbound(
+            make_envelope(channel=grp, author=other, message_id="grp-other",
+                          text="keep me")
+        )
+        counts = await store.delete_user_history(u.bot_user_id)
+        assert counts == {"messages": 3, "private_channels": 1}
+        assert await store.get_recent_messages("fake", dm) == []
+        grp_left = {m.text for m in await store.get_recent_messages("fake", grp)}
+        assert grp_left == {"keep me"}
+
+
 class TestConcurrency:
     async def test_parallel_inserts_no_corruption(self, tmp_path):
         s = ConversationStore(tmp_path / "concurrent.sqlite")

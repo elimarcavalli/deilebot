@@ -377,6 +377,75 @@ class ConversationStore:
             await db.commit()
             return removed
 
+    async def delete_user_history(self, bot_user_id: str) -> Dict[str, int]:
+        """Delete a user's conversation history so the bot truly forgets them.
+
+        ``purge_user_messages`` only removes rows ``WHERE bot_user_id = ?`` —
+        in a DM that drops the user's inbound but LEAVES the bot's outbound,
+        and :meth:`get_recent_messages` (the per-channel window the agent
+        and the intent classifier read) would still surface half the
+        conversation. This method fixes that:
+
+        - For channels where this user is the ONLY non-bot participant
+          (every DM, plus any single-user thread) it deletes EVERY message
+          — inbound and outbound — because the whole channel is private to
+          that user.
+        - For shared channels (other humans posted there too) it deletes
+          only this user's own inbound rows; other people's data survives.
+
+        ``attachment`` rows cascade via the ``ON DELETE CASCADE`` FK.
+        Returns ``{"messages": <total deleted>, "private_channels": <count>}``.
+        """
+        async with self._lock:
+            db = self._require_db()
+            cursor = await db.execute(
+                "SELECT DISTINCT provider, provider_channel_id FROM message "
+                "WHERE bot_user_id = ? AND direction = 'inbound'",
+                (bot_user_id,),
+            )
+            channels = await cursor.fetchall()
+            await cursor.close()
+
+            deleted = 0
+            private_channels = 0
+            for provider, channel_id in channels:
+                # Count distinct NON-bot inbound senders in this channel.
+                # 1 ⇒ the channel belongs exclusively to this user.
+                cursor = await db.execute(
+                    """
+                    SELECT COUNT(DISTINCT m.bot_user_id)
+                    FROM message m
+                    LEFT JOIN bot_user u ON u.bot_user_id = m.bot_user_id
+                    WHERE m.provider = ? AND m.provider_channel_id = ?
+                      AND m.direction = 'inbound'
+                      AND COALESCE(u.is_bot, 0) = 0
+                    """,
+                    (provider, channel_id),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                human_senders = (row[0] if row else 0) or 0
+
+                if human_senders <= 1:
+                    cursor = await db.execute(
+                        "DELETE FROM message "
+                        "WHERE provider = ? AND provider_channel_id = ?",
+                        (provider, channel_id),
+                    )
+                    private_channels += 1
+                else:
+                    cursor = await db.execute(
+                        "DELETE FROM message "
+                        "WHERE provider = ? AND provider_channel_id = ? "
+                        "AND bot_user_id = ? AND direction = 'inbound'",
+                        (provider, channel_id, bot_user_id),
+                    )
+                deleted += cursor.rowcount or 0
+                await cursor.close()
+
+            await db.commit()
+            return {"messages": deleted, "private_channels": private_channels}
+
     async def insert_audit(
         self,
         event_type: str,
