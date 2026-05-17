@@ -109,7 +109,18 @@ async def _default_http_json(
 def _merge_env_file(path: Path, updates: Dict[str, str]) -> None:
     """Grava `updates` num `.env`, trocando chaves existentes no lugar e
     anexando o resto. Linhas que o wizard não controla são preservadas.
+
+    Rejeita valores com `\\n`/`\\r`: um caractere de quebra de linha no
+    meio de um valor (paste malformado de chave/token) injetaria uma
+    linha extra no `.env`, interpretada pelo python-dotenv como nova
+    variável.
     """
+    for key, value in updates.items():
+        if "\n" in value or "\r" in value:
+            raise SetupError(
+                f"valor de {key} contém uma quebra de linha — cole o "
+                "valor inteiro, sem espaços ou linhas extras"
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
     remaining = dict(updates)
