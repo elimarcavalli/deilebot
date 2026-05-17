@@ -247,8 +247,8 @@ class SetupWizard:
             return 1
 
         if cfg.mode == "local":
-            return self._apply_local(cfg)
-        return self._apply_container(cfg)
+            return await self._apply_local(cfg)
+        return await self._apply_container(cfg)
 
     # ----- primitivas de prompt -----
 
@@ -424,8 +424,14 @@ class SetupWizard:
             "(enviar DM, etc.). O token de auth é gerado automaticamente.\n"
         )
         if cfg.mode == "local":
-            raw = self._prompt("Porta do control plane", default="8765")
-            cfg.control_plane_port = int(raw) if raw.isdigit() else 8765
+            while True:
+                raw = self._prompt("Porta do control plane", default="8765")
+                if raw.isdigit() and 1 <= int(raw) <= 65535:
+                    cfg.control_plane_port = int(raw)
+                    break
+                self._out(
+                    "  [x] A porta precisa ser um número entre 1 e 65535."
+                )
         else:
             cfg.control_plane_port = 8765  # fixo no manifesto K8s
         self._out(
@@ -494,13 +500,16 @@ class SetupWizard:
             json.dumps({"target": target}, indent=2) + "\n", encoding="utf-8"
         )
 
-    def _apply_local(self, cfg: WizardConfig) -> int:
-        self._write_env(cfg)
+    async def _apply_local(self, cfg: WizardConfig) -> int:
+        # Ordem deliberada: arquivos sem segredo primeiro, `.env` (token
+        # do Discord + chave de LLM) por ÚLTIMO — se um passo anterior
+        # falhar, nenhum segredo terá sido escrito em disco.
         self.local_yaml_path.parent.mkdir(parents=True, exist_ok=True)
         self.local_yaml_path.write_text(
             _render_deilebot_yaml(cfg), encoding="utf-8"
         )
         self._write_deploy_state("local")
+        self._write_env(cfg)
         self._out(
             "\n[ok] Configuração local gravada:\n"
             f"   {self.env_path}\n"
@@ -512,7 +521,10 @@ class SetupWizard:
         ):
             self._out("")
             try:
-                proc = subprocess.run(
+                # to_thread: subprocess.run é bloqueante — não pode
+                # travar o event loop dentro de uma coroutine.
+                proc = await asyncio.to_thread(
+                    subprocess.run,
                     [sys.executable, str(deploy), "start", "--target", "local"],
                     cwd=str(self.root),
                 )
@@ -527,17 +539,21 @@ class SetupWizard:
         )
         return 0
 
-    def _apply_container(self, cfg: WizardConfig) -> int:
+    async def _apply_container(self, cfg: WizardConfig) -> int:
         deploy = self.deploy_script_path
         if not deploy.is_file():
             raise SetupError(
                 f"não achei {deploy} — rode o wizard a partir da raiz do "
                 "repositório `deile` (onde fica a pasta infra/)."
             )
-        # O deploy.py lê o `.env` da raiz para gerar os Secrets do cluster.
-        self._write_env(cfg)
+        # Ordem deliberada: o ConfigMap e o deploy-state (sem segredo) são
+        # escritos primeiro; o `.env` (token do Discord + chave de LLM)
+        # por ÚLTIMO — se _patch_bot_configmap falhar (ex.: bloco
+        # `owners:` ausente), nenhum segredo terá ido para disco. O
+        # deploy.py só lê o `.env` mais adiante, em _deploy_container.
         self._patch_bot_configmap(cfg)
         self._write_deploy_state("container")
+        self._write_env(cfg)
         self._out(
             "\n[ok] Escrito:\n"
             f"   {self.env_path}\n"
@@ -555,7 +571,7 @@ class SetupWizard:
                 "   python3 infra/k8s/deploy.py up\n"
             )
             return 0
-        return self._deploy_container()
+        return await self._deploy_container()
 
     def _patch_bot_configmap(self, cfg: WizardConfig) -> None:
         path = self.bot_configmap_path
@@ -588,12 +604,15 @@ class SetupWizard:
         )
         path.write_text(text, encoding="utf-8")
 
-    def _deploy_container(self) -> int:
+    async def _deploy_container(self) -> int:
         deploy = str(self.deploy_script_path)
         for stage in ("build", "up"):
             self._out(f"\n>> python3 infra/k8s/deploy.py {stage}\n")
             try:
-                proc = subprocess.run(
+                # to_thread: subprocess.run (build/up demoram) é bloqueante
+                # — não pode travar o event loop dentro de uma coroutine.
+                proc = await asyncio.to_thread(
+                    subprocess.run,
                     [sys.executable, deploy, stage, "--yes"],
                     cwd=str(self.root),
                 )

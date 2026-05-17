@@ -245,7 +245,7 @@ def test_patch_bot_configmap_missing_file_raises(tmp_path):
 
 # ----- modo container: declinar o deploy grava config sem aplicar -----
 
-def test_container_decline_deploy_writes_config(tmp_path):
+async def test_container_decline_deploy_writes_config(tmp_path):
     deploy = tmp_path / "infra" / "k8s" / "deploy.py"
     deploy.parent.mkdir(parents=True)
     deploy.write_text("# stub\n")
@@ -261,7 +261,7 @@ def test_container_decline_deploy_writes_config(tmp_path):
         llm_provider="openai",
         llm_key="sk-openai",
     )
-    rc = w._apply_container(cfg)
+    rc = await w._apply_container(cfg)
     assert rc == 0
     assert "DEILE_BOT_DISCORD_TOKEN=tok" in (tmp_path / ".env").read_text()
     assert '- "discord:123456789012345678"' in cm.read_text()
@@ -269,12 +269,12 @@ def test_container_decline_deploy_writes_config(tmp_path):
     assert state == {"target": "container"}
 
 
-def test_apply_container_without_deploy_script_raises(tmp_path):
+async def test_apply_container_without_deploy_script_raises(tmp_path):
     cm = tmp_path / "infra" / "k8s" / "manifests" / "15-bot-config.yaml"
     cm.parent.mkdir(parents=True)
     cm.write_text(_SAMPLE_CONFIGMAP)
     w = _wizard(tmp_path)
     with pytest.raises(SetupError):
-        w._apply_container(WizardConfig(mode="container",
-                                        owner_ids=["123456789012345678"],
-                                        llm_provider="openai", llm_key="k"))
+        await w._apply_container(WizardConfig(mode="container",
+                                              owner_ids=["123456789012345678"],
+                                              llm_provider="openai", llm_key="k"))
