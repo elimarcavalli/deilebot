@@ -9,9 +9,9 @@ deploy via o orquestrador `infra/k8s/deploy.py`.
 
 Dois modos:
   local      — grava `.env` + `config/deilebot.yaml`; opcionalmente sobe
-               o bot como serviço (via `deploy.py start`).
+               o bot como serviço (via `deploy.py local start`).
   container  — grava `.env`, ajusta o ConfigMap do k8s com os donos, e
-               builda + aplica a stack via `deploy.py`.
+               builda + aplica a stack via `deploy.py k8s build` + `up`.
 
 O wizard não cria a aplicação no Discord (o Discord não expõe API para
 isso) — ele imprime o passo-a-passo e valida o token colado. Também não
@@ -536,7 +536,7 @@ class SetupWizard:
                 # travar o event loop dentro de uma coroutine.
                 proc = await asyncio.to_thread(
                     subprocess.run,
-                    [sys.executable, str(deploy), "start", "--target", "local"],
+                    [sys.executable, str(deploy), "local", "start", "--yes"],
                     cwd=str(self.root),
                 )
             except OSError as exc:
@@ -546,7 +546,7 @@ class SetupWizard:
         self._out(
             "\nQuando quiser iniciar o bot:\n"
             "   python -m deilebot run --provider discord     (em foreground)\n"
-            "   python3 infra/k8s/deploy.py start             (como serviço)\n"
+            "   python3 infra/k8s/deploy.py local start       (como serviço)\n"
         )
         return 0
 
@@ -578,8 +578,8 @@ class SetupWizard:
         if not self._confirm("Buildar e fazer o deploy agora?", default=True):
             self._out(
                 "\nConfig gravada; deploy não executado. Quando quiser:\n"
-                "   python3 infra/k8s/deploy.py build\n"
-                "   python3 infra/k8s/deploy.py up\n"
+                "   python3 infra/k8s/deploy.py k8s build\n"
+                "   python3 infra/k8s/deploy.py k8s up\n"
             )
             return 0
         return await self._deploy_container()
@@ -618,13 +618,13 @@ class SetupWizard:
     async def _deploy_container(self) -> int:
         deploy = str(self.deploy_script_path)
         for stage in ("build", "up"):
-            self._out(f"\n>> python3 infra/k8s/deploy.py {stage}\n")
+            self._out(f"\n>> python3 infra/k8s/deploy.py k8s {stage}\n")
             try:
                 # to_thread: subprocess.run (build/up demoram) é bloqueante
                 # — não pode travar o event loop dentro de uma coroutine.
                 proc = await asyncio.to_thread(
                     subprocess.run,
-                    [sys.executable, deploy, stage, "--yes"],
+                    [sys.executable, deploy, "k8s", stage, "--yes"],
                     cwd=str(self.root),
                 )
             except OSError as exc:
@@ -632,14 +632,14 @@ class SetupWizard:
                 return 1
             if proc.returncode != 0:
                 self._out(
-                    f"  [x] `deploy.py {stage}` falhou (exit {proc.returncode}).\n"
+                    f"  [x] `deploy.py k8s {stage}` falhou (exit {proc.returncode}).\n"
                     "      Veja a saída acima e o README, seção 'Deploy em\n"
                     "      Kubernetes'."
                 )
                 return proc.returncode
         self._out(
             "\n[ok] Deploy concluído. Verifique:\n"
-            "   python3 infra/k8s/deploy.py status\n"
+            "   python3 infra/k8s/deploy.py k8s status\n"
             "\nO bot já deve estar online no Discord.\n"
         )
         return 0

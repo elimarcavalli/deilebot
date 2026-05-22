@@ -120,7 +120,7 @@ O assistente pergunta, em sequência:
 Ao final, o wizard grava:
 
 - **Modo local:** `.env` (segredos) + `config/deilebot.yaml` (estrutura) na raiz `deile/`.
-- **Modo container:** o `.env`, ajusta os donos no `infra/k8s/manifests/15-bot-config.yaml`, grava `.deile/deploy.json` e, com sua confirmação, **builda a imagem e faz o deploy** no Kubernetes (`deploy.py build` + `deploy.py up`).
+- **Modo container:** o `.env`, ajusta os donos no `infra/k8s/manifests/15-bot-config.yaml`, grava `.deile/deploy.json` e, com sua confirmação, **builda a imagem e faz o deploy** no Kubernetes (`deploy.py k8s build` + `deploy.py k8s up`).
 
 > **Primeira execução sem config:** se você rodar `python -m deilebot run --provider discord` sem nenhuma configuração, o bot detecta a ausência do token e **abre o wizard automaticamente** (quando há um terminal interativo).
 >
@@ -187,25 +187,37 @@ Papéis suportados: **`bot`** (executa `deilebot.cli`), **`deile`** (executa `de
 
 ### O orquestrador `deploy.py`
 
-A stack é gerida pelo `infra/k8s/deploy.py` (o antigo `run.sh` virou um shim de compatibilidade que apenas chama este script):
+A stack é gerida pelo `infra/k8s/deploy.py` (o antigo `run.sh` virou um shim de compatibilidade que apenas chama este script). O alvo é **sempre explícito no verbo** — `k8s` (stack no Kubernetes) ou `local` (bot como serviço no host) — e rodar sem argumentos abre um menu interativo que detecta o estado de cada alvo:
 
 ```bash
-python3 infra/k8s/deploy.py help      # lista todos os comandos
-python3 infra/k8s/deploy.py doctor    # diagnostica os pré-requisitos da máquina
-python3 infra/k8s/deploy.py build     # builda/rebuilda a imagem deile-stack:local
-python3 infra/k8s/deploy.py up        # sobe a stack (namespace, Secrets, deployments)
-python3 infra/k8s/deploy.py start     # religa o bot (scale → 1)
-python3 infra/k8s/deploy.py stop      # fecha o bot (scale → 0; mantém dados e Secrets)
-python3 infra/k8s/deploy.py restart   # rollout restart
-python3 infra/k8s/deploy.py status    # pods, deployments e services
-python3 infra/k8s/deploy.py logs      # logs recentes de bot + worker
-python3 infra/k8s/deploy.py test      # roda o Job one-shot deile-oneshot
-python3 infra/k8s/deploy.py clone <owner/repo>   # clona um repo no deile-shell
-python3 infra/k8s/deploy.py reset     # reset completo (down + up)
-python3 infra/k8s/deploy.py down      # teardown completo — apaga o namespace
+python3 infra/k8s/deploy.py            # menu interativo (detecta o estado de cada alvo)
+python3 infra/k8s/deploy.py help       # lista todos os comandos
+python3 infra/k8s/deploy.py doctor     # diagnostica os pré-requisitos da máquina
+
+# alvo k8s — a stack no Kubernetes
+python3 infra/k8s/deploy.py k8s up        # sobe/atualiza a stack (namespace, Secrets, deployments)
+python3 infra/k8s/deploy.py k8s build     # builda a imagem deile-stack:local (--restart religa os pods)
+python3 infra/k8s/deploy.py k8s status    # pods, deployments e services
+python3 infra/k8s/deploy.py k8s logs      # logs recentes de bot + worker
+python3 infra/k8s/deploy.py k8s restart   # rollout restart
+python3 infra/k8s/deploy.py k8s start     # religa o bot (scale → 1)
+python3 infra/k8s/deploy.py k8s stop      # pausa o bot (scale → 0; mantém dados e Secrets)
+python3 infra/k8s/deploy.py k8s test      # roda o Job one-shot deile-oneshot
+python3 infra/k8s/deploy.py k8s clone <owner/repo>   # clona um repo no deile-shell
+python3 infra/k8s/deploy.py k8s down      # teardown completo — APAGA o namespace e os dados
+
+# alvo local — o bot como serviço no host (sem k8s)
+python3 infra/k8s/deploy.py local start   # sobe o bot como serviço (systemd/launchd/pidfile)
+python3 infra/k8s/deploy.py local status  # estado do serviço
+python3 infra/k8s/deploy.py local stop    # para o bot
+python3 infra/k8s/deploy.py local restart # reinicia o bot
+python3 infra/k8s/deploy.py local logs    # logs recentes do bot
+
+# qualquer comando que ALTERA estado aceita --dry-run (mostra o plano e sai)
+python3 infra/k8s/deploy.py --dry-run k8s up
 ```
 
-O `deploy.py` lê os segredos do **`.env` na raiz do repo `deile`** e os injeta nos Secrets do cluster — nada de segredo é impresso. Antes de operar, ele checa os pré-requisitos; se faltar Kubernetes, chama o `infra/setup_environment.py`. Os comandos de ciclo de vida (`start`/`stop`/`restart`/`status`/`logs`/`reset`) também funcionam no **modo local** (bot como serviço, sem k8s).
+O `deploy.py` lê os segredos do **`.env` na raiz do repo `deile`** e os injeta nos Secrets do cluster — nada de segredo é impresso. Antes de operar, ele checa os pré-requisitos; se faltar Kubernetes, chama o `infra/setup_environment.py`. Não há mais adivinhação de alvo — `k8s` e `local` são sempre explícitos. Comandos antigos (`up`, `start`, ...) ainda funcionam, mas avisam a forma nova; o antigo `reset` saiu — use `k8s down` + `k8s up` (ou `local restart`).
 
 ### Control plane — a "flecha reversa"
 
