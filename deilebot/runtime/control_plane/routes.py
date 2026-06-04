@@ -24,7 +24,7 @@ from deilebot_client.models import (ChannelPostRequest, ChannelPostResponse,
                                      ThreadStartResponse, UserProfileResponse,
                                      WhatsAppSendTemplateRequest,
                                      WhatsAppSendTemplateResponse)
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope,
                                            TemplateMessage)
@@ -882,10 +882,121 @@ async def test_simulate(request: web.Request) -> web.Response:
     })
 
 
+class NotifyRequest(BaseModel):
+    """Payload the deile-monitor POSTs to ``/v1/notify`` (monitor_core._deliver).
+
+    O monitor envia ``{user_id, message}`` (e opcionalmente ``severity``)
+    para entregar um alerta proativo por DM. ``severity`` é informativo —
+    fica no audit, não muda o transporte. Campos extras são tolerados para
+    não acoplar o servidor a uma versão exata do monitor.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    user_id: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    severity: Optional[str] = None
+
+
+async def notify(request: web.Request) -> web.Response:
+    """``POST /v1/notify`` — canal de DM proativo do deile-monitor.
+
+    Recebe ``{user_id, message, severity?}`` e entrega via DM (mesmo
+    transporte do ``dm.send``). Persiste a mensagem na ConversationStore
+    pelo MESMO mecanismo best-effort dos demais handlers (``_persist_outbound``)
+    — uma falha de store nunca quebra a entrega já feita.
+
+    Bearer automático: o middleware de auth cobre toda rota não-``/v1/health``.
+    """
+    try:
+        body: NotifyRequest = await _parse_body(request, NotifyRequest)
+    except _ResponseError as e:
+        return e.response
+    adapter = _get_adapter(request)
+    if adapter is None:
+        return _adapter_unavailable(request)
+
+    target_provider_id = str(body.user_id)
+    user = BotUser(
+        bot_user_id=f"transient-{target_provider_id}",
+        provider=adapter.name,
+        provider_user_id=target_provider_id,
+        display_name="(monitor)",
+    )
+    try:
+        msg_id = await adapter.send_dm(user, body.message)
+    except CapabilityNotSupported as e:
+        await _emit_audit(request, "outbound_failed", {"op": "notify", "reason": "capability"})
+        return json_error("UPSTREAM_ERROR", e.message, status=502)
+    except ProviderError as e:
+        await _emit_audit(request, "outbound_failed", {"op": "notify", "reason": "upstream"})
+        return json_error("UPSTREAM_ERROR", e.message, status=502)
+    except (PermissionDenied, BotFoundationError) as e:
+        await _emit_audit(request, "outbound_failed", {"op": "notify", "reason": "denied"})
+        return json_error("FORBIDDEN", e.message, status=403)
+    except Exception:
+        logger.exception("notify failed")
+        return json_error("INTERNAL_ERROR", "unexpected failure", status=500)
+
+    payload = DMSendResponse(
+        message_id=str(msg_id),
+        user_id=target_provider_id,
+        sent_at=datetime.now(timezone.utc),
+    )
+    await _emit_audit(
+        request,
+        "outbound_sent",
+        {
+            "op": "notify",
+            "user_id": target_provider_id,
+            "message_id": str(msg_id),
+            "severity": body.severity,
+        },
+    )
+    _audit_outbound(request, "notify", ok=True, user_id=target_provider_id, message_id=str(msg_id))
+    # Persiste a DM na conversation store usando o MESMO mecanismo dos demais
+    # handlers. A DM no Discord vive num canal cujo id é o snowflake do
+    # DM channel — resolvido a partir do user logo após o envio. Best-effort:
+    # se não der pra resolver, _persist_outbound já no-op-a sem inbound prévio.
+    dm_channel_id = await _resolve_dm_channel_id(adapter, target_provider_id)
+    if dm_channel_id:
+        await _persist_outbound(
+            request,
+            provider=adapter.name,
+            channel_id=dm_channel_id,
+            message_id=str(msg_id),
+            text=body.message,
+        )
+    return web.json_response(payload.model_dump(mode="json"))
+
+
+async def _resolve_dm_channel_id(adapter, provider_user_id: str) -> Optional[str]:
+    """Best-effort: resolve o snowflake do DM channel de um usuário.
+
+    A ConversationStore chaveia mensagens por ``provider_channel_id``; para
+    uma DM o canal é o ``DMChannel`` do usuário (não o snowflake do usuário).
+    Retorna ``None`` quando o client não está pronto ou a resolução falha —
+    o caller trata isso como "não persistir" sem quebrar a entrega."""
+    client = getattr(adapter, "_client", None)
+    if client is None:
+        return None
+    try:
+        target = await client.fetch_user(int(provider_user_id))
+        dm = getattr(target, "dm_channel", None)
+        if dm is None and hasattr(target, "create_dm"):
+            dm = await target.create_dm()
+        return str(dm.id) if dm is not None else None
+    except Exception:  # noqa: BLE001 — persistência é best-effort
+        logger.debug("notify: dm channel resolution failed", exc_info=True)
+        return None
+
+
 def register_routes(app: web.Application) -> None:
     app.router.add_get("/v1/health", health)
     app.router.add_post("/v1/outbound/discord/channel.post", channel_post)
     app.router.add_post("/v1/outbound/discord/dm.send", dm_send)
+    # Monitor DM channel — the deile-monitor POSTs proactive alerts here.
+    app.router.add_post("/v1/notify", notify)
     app.router.add_post("/v1/outbound/discord/reaction.add", reaction_add)
     app.router.add_post("/v1/outbound/discord/thread.start", thread_start)
     app.router.add_post("/v1/outbound/discord/message.pin", message_pin)

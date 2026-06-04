@@ -388,3 +388,90 @@ async def test_message_edit_provider_error_returns_502_upstream(daemon):
     async with BotControlClient(settings) as cli:
         with pytest.raises(BotClientUpstreamError):
             await cli.discord_message_edit(channel_id="1", message_id="123", text="x")
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/notify — the deile-monitor's DM channel (monitor_core._deliver).
+#
+# O deilebot_client não expõe esse endpoint (é consumido pelo curl do
+# monitor), então batemos direto via aiohttp. Body: {user_id, message,
+# severity?}. Auth Bearer é automática pelo middleware existente.
+# ---------------------------------------------------------------------------
+
+
+async def _post_json(port, path, *, token, body):
+    """Raw POST helper — o client lib não cobre /v1/notify."""
+    import aiohttp
+
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    async with aiohttp.ClientSession() as sess:
+        async with sess.post(
+            f"http://127.0.0.1:{port}{path}", json=body, headers=headers
+        ) as resp:
+            return resp.status, await resp.json()
+
+
+async def test_notify_requires_bearer(daemon):
+    """Sem bearer → 401 (a rota não é pública, só /v1/health é)."""
+    _srv, _adapter, port = daemon
+    status, payload = await _post_json(
+        port, "/v1/notify", token="", body={"user_id": "42", "message": "alerta"}
+    )
+    assert status == 401
+    assert payload["error"]["code"] == "UNAUTHORIZED"
+
+
+async def test_notify_delivers_dm(daemon):
+    """Com bearer + body válido → 200 e send_dm chamado com (user_id, message)."""
+    _srv, adapter, port = daemon
+    status, payload = await _post_json(
+        port,
+        "/v1/notify",
+        token="cp-test",
+        body={"user_id": "42", "message": "🔴 pipeline travado", "severity": "P1"},
+    )
+    assert status == 200
+    assert payload["message_id"] == "dm-99"
+    assert payload["user_id"] == "42"
+    assert ("send_dm", "42", "🔴 pipeline travado") in adapter.calls
+
+
+async def test_notify_invalid_body_returns_canonical_error(daemon):
+    """Body sem ``message`` → envelope canônico {error:{code,message}} (400)."""
+    _srv, _adapter, port = daemon
+    status, payload = await _post_json(
+        port, "/v1/notify", token="cp-test", body={"user_id": "42"}
+    )
+    assert status == 400
+    assert payload["error"]["code"] == "BAD_REQUEST"
+    assert "error" in payload and "message" in payload["error"]
+
+
+async def test_notify_no_adapter_returns_503(daemon):
+    """Adapter ausente → 503 NOT_READY (mesmo padrão dos demais handlers)."""
+    srv, _adapter, port = daemon
+    srv.adapters.pop("discord", None)
+    status, payload = await _post_json(
+        port, "/v1/notify", token="cp-test", body={"user_id": "42", "message": "x"}
+    )
+    assert status == 503
+    assert payload["error"]["code"] == "NOT_READY"
+
+
+async def test_notify_upstream_error_returns_502(daemon):
+    """ProviderError no send_dm → 502/UPSTREAM_ERROR, não 403/denied."""
+    from deilebot.foundation.exceptions import ProviderError
+
+    _srv, adapter, port = daemon
+
+    async def _fail(user, text, attachments=()):
+        raise ProviderError("DM send failed: 50007 cannot send to this user", context={})
+
+    adapter.send_dm = _fail  # type: ignore[method-assign]
+    status, payload = await _post_json(
+        port, "/v1/notify", token="cp-test", body={"user_id": "42", "message": "x"}
+    )
+    assert status == 502
+    assert payload["error"]["code"] == "UPSTREAM_ERROR"
