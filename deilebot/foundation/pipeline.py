@@ -8,6 +8,8 @@ Egress: render markup -> split -> send -> persist -> audit; on failure -> DLQ.
 
 from __future__ import annotations
 
+import asyncio
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -16,18 +18,18 @@ from tenacity import (AsyncRetrying, retry_if_exception_type,
                       stop_after_attempt, wait_exponential)
 
 from deilebot.foundation.agent_bridge import (AgentBridge, AgentInvocation,
-                                               AgentResponse)
+                                              AgentResponse)
 from deilebot.foundation.agent_meta import AgentMetaProvider
 from deilebot.foundation.audit import AuditEventType, BotAuditLogger
 from deilebot.foundation.capabilities import CapabilityCatalog
 from deilebot.foundation.conversation_store import (ConversationStore,
-                                                     StoredMessage)
+                                                    StoredMessage)
 from deilebot.foundation.dlq import DeadLetterQueue
 from deilebot.foundation.envelope import (BotUser, Channel, MessageEnvelope,
-                                           TemplateMessage)
+                                          TemplateMessage)
 from deilebot.foundation.event_bus import BotEventBus, BotEventType
 from deilebot.foundation.exceptions import (AgentInvocationError,
-                                             ProviderError, RateLimited)
+                                            ProviderError, RateLimited)
 from deilebot.foundation.identity import IdentityResolver
 from deilebot.foundation.intent import IntentClassifier
 from deilebot.foundation.logging import get_logger
@@ -44,6 +46,37 @@ class RetryPolicy:
     max_attempts: int = 3
     base_seconds: float = 0.2
     max_seconds: float = 5.0
+
+
+# Auto-route: owner messages that are cluster/pipeline questions are answered by
+# the deile-monitor (the only pod that can see the cluster), not the embedded
+# agent. Conservative gate — requires BOTH a cluster term AND a question/imperative
+# hint — so it never hijacks ordinary chat that merely mentions "pod" in passing.
+_CLUSTER_TERM_RE = re.compile(
+    r"\b(cluster|k8s|kubernetes|kubectl|namespace|pipeline|pods?|"
+    r"monitor(?:amento)?|deploy(?:ment)?|oauth|claude-worker|deile-worker|"
+    r"deilebot|anomalias?|vigia|tick|reaper|backlog|worktree)\b",
+    re.IGNORECASE,
+)
+_CLUSTER_QUESTION_HINT_RE = re.compile(
+    r"\?|^\s*(como|qual|quais|quanto|quantos|quantas|est[áa]|t[áa]|tem|h[áa]|"
+    r"cad[êe]|o que|por ?que|status|checa|verifica|olha|mostra|lista|me diz|"
+    r"diz|ver|how|what|why|is\b|are\b|show|list|check)\b",
+    re.IGNORECASE,
+)
+_AUTOROUTE_POLL_INTERVAL_S = 2.0
+_AUTOROUTE_POLL_TIMEOUT_S = 170.0
+
+
+def _is_cluster_question(text: str) -> bool:
+    """True iff *text* looks like a cluster/pipeline question (conservative).
+
+    Requires a cluster term AND a question/imperative hint; bounded length so a
+    long paste that merely contains "pod" never triggers."""
+    t = (text or "").strip()
+    if not t or len(t) > 600:
+        return False
+    return bool(_CLUSTER_TERM_RE.search(t) and _CLUSTER_QUESTION_HINT_RE.search(t))
 
 
 def render_history_for_worker(
@@ -350,6 +383,89 @@ class IngressPipeline:
         self.agent_meta = agent_meta
         self._logger = get_logger("ingress")
 
+    def _load_monitor_client(self):
+        """Lazy import of ``(MonitorClient, MonitorClientError)`` from the deile
+        package. Lazy because ``deile`` is heavy and the client ships from the
+        deile repo (merges first, see spec §8). Returns ``None`` when the package
+        is unavailable so the caller falls through to the embedded agent."""
+        try:
+            from deile.infrastructure.deile_monitor_client import (
+                MonitorClient, MonitorClientError)
+        except Exception:  # noqa: BLE001 — not installed → normal flow
+            return None
+        return MonitorClient, MonitorClientError
+
+    async def _send_monitor_text(self, adapter, env: MessageEnvelope,
+                                 persona: str, text: str) -> None:
+        """Deliver *text* via the egress (chunking + persistence + audit)."""
+        response = AgentResponse(text=text, markup=None)
+        await self.egress.send_response(adapter, env, response, persona)
+
+    async def _try_route_to_monitor(self, env: MessageEnvelope, adapter,
+                                    persona: str) -> bool:
+        """Ask the deile-monitor and reply. Returns ``True`` when handled
+        (answered or surfaced an error), ``False`` to fall through to the
+        embedded agent (monitor not wired in this deployment)."""
+        loaded = self._load_monitor_client()
+        if loaded is None:
+            return False
+        MonitorClient, MonitorClientError = loaded
+        try:
+            client = MonitorClient()
+        except MonitorClientError as exc:
+            if exc.code in ("MONITOR_AUTH_MISSING", "MONITOR_TRANSPORT_MISSING"):
+                return False  # not wired → normal flow, never drop the message
+            await self._send_monitor_text(
+                adapter, env, persona, f"⚠️ monitor indisponível (`{exc.code}`).")
+            return True
+        self.metrics.inc("bot_monitor_autoroute_total", {"result": "started"})
+        # Acknowledge (best-effort; skip synthetic slash ids).
+        if not str(env.message_id or "").startswith("slash-"):
+            try:
+                await adapter.react(env.channel, env.message_id, "🛰️")
+            except Exception:  # noqa: BLE001 — reaction is cosmetic
+                pass
+        try:
+            request_id = await client.ask(env.text)
+        except MonitorClientError as exc:
+            await self._send_monitor_text(
+                adapter, env, persona,
+                f"⚠️ não consegui perguntar ao monitor (`{exc.code}`).")
+            self.metrics.inc("bot_monitor_autoroute_total", {"result": "error"})
+            return True
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _AUTOROUTE_POLL_TIMEOUT_S
+        result: Dict = {}
+        while loop.time() < deadline:
+            try:
+                result = await client.get_ask_result(request_id)
+            except MonitorClientError as exc:
+                await self._send_monitor_text(
+                    adapter, env, persona,
+                    f"⚠️ erro ao buscar a resposta (`{exc.code}`).")
+                self.metrics.inc("bot_monitor_autoroute_total", {"result": "error"})
+                return True
+            if result.get("status") != "running":
+                break
+            await asyncio.sleep(_AUTOROUTE_POLL_INTERVAL_S)
+        else:
+            await self._send_monitor_text(
+                adapter, env, persona,
+                "⏱️ o monitor demorou demais. Tente `/monitor ask` de novo.")
+            self.metrics.inc("bot_monitor_autoroute_total", {"result": "timeout"})
+            return True
+        if result.get("status") == "done":
+            await self._send_monitor_text(
+                adapter, env, persona,
+                str(result.get("answer") or "(resposta vazia)"))
+            self.metrics.inc("bot_monitor_autoroute_total", {"result": "done"})
+        else:
+            await self._send_monitor_text(
+                adapter, env, persona,
+                f"⚠️ o monitor não respondeu: {str(result.get('error') or 'erro')[:1500]}")
+            self.metrics.inc("bot_monitor_autoroute_total", {"result": "error"})
+        return True
+
     async def handle(self, env: MessageEnvelope, adapter) -> None:
         provider = env.channel.provider
         scope = env.channel.scope.value
@@ -436,6 +552,12 @@ class IngressPipeline:
         # 8. owner / persona
         is_owner = await self.permissions.is_owner(user)
         persona = await self.persona_selector.resolve(env, user, is_owner)
+        # 8.5 Auto-route owner cluster/pipeline questions to the deile-monitor —
+        # the only pod with cluster visibility. Falls through to the embedded
+        # agent when the monitor is not wired (messages are never dropped).
+        if is_owner and _is_cluster_question(env.text):
+            if await self._try_route_to_monitor(env, adapter, persona):
+                return
         # 9. capability snapshot + extra prompt
         snap = await self.capability_catalog.snapshot(adapter, self.agent_meta)
         extra = self.capability_catalog.render_for_system_prompt(snap)
@@ -600,7 +722,7 @@ class IngressPipeline:
                     pass
             err_type = type(e).__name__
             if "Timeout" in err_type:
-                reason = f"timeout — pedido demorou demais; tente algo menor"
+                reason = "timeout — pedido demorou demais; tente algo menor"
             else:
                 reason = f"{err_type}: {str(e)[:200]}"
             await self.egress.send_fallback(
