@@ -217,3 +217,26 @@ async def test_monitor_ask_error_replies_and_skips_agent(store, monkeypatch):
     await pipeline.handle(_dm("como tá o cluster?"), adapter)
     assert bridge.invocations == [], "a wired-but-failing monitor must not double-process"
     assert "MONITOR_UNREACHABLE" in adapter.inbox[-1]["text"]
+
+
+class _RunningForeverClient:
+    """ask() ok, but the result stays 'running' forever → exercises the timeout."""
+
+    async def ask(self, question):
+        return "req-1"
+
+    async def get_ask_result(self, request_id):
+        return {"status": "running"}
+
+
+async def test_monitor_poll_timeout_replies_and_skips_agent(store, monkeypatch):
+    import deilebot.foundation.pipeline as plmod
+    # Trip the deadline almost immediately so the test is fast.
+    monkeypatch.setattr(plmod, "_AUTOROUTE_POLL_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(plmod, "_AUTOROUTE_POLL_INTERVAL_S", 0.01)
+    pipeline, adapter, bridge = _wire(store, owners=["fake:u-1"])
+    monkeypatch.setattr(pipeline, "_load_monitor_client",
+                        lambda: (lambda: _RunningForeverClient(), _FakeError))
+    await pipeline.handle(_dm("como tá o cluster?"), adapter)
+    assert bridge.invocations == [], "timeout path must not fall through to the agent"
+    assert "demorou" in adapter.inbox[-1]["text"].lower()

@@ -253,6 +253,28 @@ async def test_ask_error_status_replies_with_error(monkeypatch):
     assert "kubectl timeout" in msg
 
 
+async def test_ask_poll_timeout_replies(monkeypatch):
+    """The poll deadline elapses while the monitor stays 'running' → the cog
+    replies with the timeout message (the while/else branch)."""
+    import deilebot.providers.discord.cogs.monitor_cog as mc
+
+    async def _no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(mc.asyncio, "sleep", _no_sleep)
+    # Deadline already passed on the first check → the poll loop never enters →
+    # the else (timeout) branch runs.
+    monkeypatch.setattr(mc, "_ASK_POLL_TIMEOUT_S", 0.0)
+
+    fake = _FakeClient(ask_sequence=[{"status": "running"}])
+    cog = _make_cog(is_owner=True, fake_client=fake)
+    ctx = _make_ctx()
+    await cog.ask.callback(cog, ctx, question="x")
+    ctx.defer.assert_awaited_once()
+    msg = ctx.send.await_args.args[0]
+    assert "demorou" in msg.lower()
+
+
 # ---------------------------------------------------------------------------
 # Wiring — MonitorCog é registrado no adapter
 # ---------------------------------------------------------------------------
