@@ -23,10 +23,15 @@ except ImportError:  # pragma: no cover
 class TranscriptionSettings(BaseModel):
     """STT config (non-secret). api_key MUST come from env DEILE_BOT_TRANSCRIPTION_API_KEY."""
 
-    engine: Literal["openai"] = "openai"
+    engine: Literal["openai", "local"] = "openai"
     enabled: bool = False
     max_duration_seconds: int = 120
     max_minutes_per_month: int = 60
+    # local engine (faster-whisper) config
+    local_model_path: Optional[Path] = None
+    local_device: Literal["cpu", "cuda"] = "cpu"
+    local_compute_type: str = "int8"
+    local_timeout_seconds: int = 60
     language: Literal["auto", "pt", "en", "inherit_guild"] = "auto"
 
     # Chunking — áudios > max_duration_seconds são divididos em janelas
