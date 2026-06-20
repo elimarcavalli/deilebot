@@ -149,3 +149,74 @@ tolerations, tag de imagem CUDA) **vive no repo `deile`, em `infra/k8s/`**
 
 AC-G3 é rastreado como checklist line na issue #35 e deve ser entregue no repo `deile`
 como perfil GPU gated por toggle (default OFF), verificável por diff de render.
+
+---
+
+## AC-8 — Benchmark de WER (manual, fora do CI)
+
+**Issue:** #49 | **Dependência:** áudio e credencial reais (#38, human-gated)
+
+### O que é WER
+
+**WER (Word Error Rate)** = `(S + D + I) / N` onde S=substituições, D=deleções,
+I=inserções e N=número de palavras na referência.
+
+- WER = 0,00 → transcrição perfeita
+- WER = 0,15 → 15% das palavras com erro (threshold de aceite)
+
+### Threshold de aceite
+
+```
+WER ≤ 0,15  (acurácia ≥ 85%)
+```
+
+### Comando exato
+
+```bash
+LOCAL_MODEL_PATH=/path/to/ctranslate2-model \
+python3 tests/fixtures/transcription/benchmark_local.py \
+  --device cpu \
+  --compute_type int8 \
+  --language pt
+```
+
+Onde `LOCAL_MODEL_PATH` aponta para um diretório CTranslate2 válido
+(contendo `model.bin`, `config.json`, `tokenizer.json`).
+
+### Fixtures de referência
+
+Os clipes e transcrições de referência ficam em
+`tests/fixtures/transcription/clips/` (criados via issue #23):
+
+```
+tests/fixtures/transcription/clips/
+├── pt_01.ogg        ← clipe PT-BR
+├── pt_01.ref.txt    ← transcrição de referência (sem pontuação, minúsculas)
+├── pt_02.ogg
+├── pt_02.ref.txt
+├── en_01.ogg        ← clipe EN
+├── en_01.ref.txt
+└── ...
+```
+
+Cada `.ref.txt` contém a transcrição esperada normalizada:
+sem pontuação opcional, tudo em minúsculas, sem acentos opcionais.
+
+### Ferramenta de WER
+
+Use `jiwer` (pip install jiwer) ou o script em `tests/fixtures/transcription/benchmark_local.py`:
+
+```python
+from jiwer import wer
+score = wer(reference, hypothesis)
+assert score <= 0.15, f"WER {score:.2%} > threshold 15%"
+```
+
+### Nota: por que não roda no CI
+
+- Requer modelo local (`LOCAL_MODEL_PATH`) — não versionado no repo.
+- Requer áudio com voz real — os arquivos `.ogg` em `clips/` devem ser
+  adicionados manualmente (issue #38 é human-gated por esta razão).
+- Resultado não-determinístico entre execuções (temperatura > 0).
+
+Linkar a partir de `README.md` (âncora `#transcrição-local`) — ver #49.

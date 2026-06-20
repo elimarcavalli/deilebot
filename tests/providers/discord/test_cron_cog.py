@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -19,6 +20,7 @@ def _make_ctx(
     channel_id: int = 200,
     has_interaction: bool = False,
 ) -> MagicMock:
+    from unittest.mock import AsyncMock
     ctx = MagicMock()
     ctx.defer = AsyncMock()
     ctx.send = AsyncMock()
@@ -30,17 +32,37 @@ def _make_ctx(
     return ctx
 
 
+def _fake_entry(
+    id: str = "abc-123",
+    prompt: str = "task",
+    cron: str | None = None,
+    run_at: datetime | None = None,
+    enabled: bool = True,
+    created_by: str = "discord:1",
+) -> SimpleNamespace:
+    """Return a CronEntry-like object (attribute access, not dict)."""
+    return SimpleNamespace(
+        id=id,
+        prompt=prompt,
+        cron=cron,
+        run_at=run_at,
+        enabled=enabled,
+        created_by=created_by,
+    )
+
+
 def _make_store(
     *,
-    create_return: str = "abc-123",
     list_return: list | None = None,
-    delete_return: bool = True,
+    get_return=None,
+    remove_return: bool = True,
 ) -> MagicMock:
-    """Return a mock CronStore."""
+    """Return a mock CronStore using the synchronous API (called via asyncio.to_thread)."""
     store = MagicMock()
-    store.create = AsyncMock(return_value=create_return)
-    store.list_all = AsyncMock(return_value=list_return if list_return is not None else [])
-    store.delete = AsyncMock(return_value=delete_return)
+    store.add = MagicMock(return_value=None)
+    store.list_all = MagicMock(return_value=list_return if list_return is not None else [])
+    store.get = MagicMock(return_value=get_return)
+    store.remove = MagicMock(return_value=remove_return)
     return store
 
 
@@ -112,35 +134,36 @@ class TestParseQuando:
 
 class TestAgendar:
     async def test_agendar_with_iso_datetime_creates_task(self):
-        store = _make_store(create_return="task-001")
+        store = _make_store()
         cog = _make_cog(store)
         ctx = _make_ctx()
 
         await _call_agendar(cog, ctx, "enviar relatório", "2025-08-01T09:00:00")
 
-        store.create.assert_awaited_once()
-        call_kwargs = store.create.call_args.kwargs
-        assert call_kwargs["prompt"] == "enviar relatório"
-        assert call_kwargs["cron_expr"] is None
-        assert isinstance(call_kwargs["run_at"], datetime)
+        store.add.assert_called_once()
+        entry_arg = store.add.call_args.args[0]
+        assert entry_arg.prompt == "enviar relatório"
+        assert entry_arg.cron is None
+        assert isinstance(entry_arg.run_at, datetime)
 
         sent_text = ctx.send.call_args[0][0]
-        assert "task-001" in sent_text
+        assert entry_arg.id in sent_text
         assert "✅" in sent_text
 
     async def test_agendar_with_cron_creates_recurring_task(self):
-        store = _make_store(create_return="task-cron-99")
+        store = _make_store()
         cog = _make_cog(store)
         ctx = _make_ctx()
 
         await _call_agendar(cog, ctx, "verificar pipeline", "0 8 * * 1")
 
-        call_kwargs = store.create.call_args.kwargs
-        assert call_kwargs["cron_expr"] == "0 8 * * 1"
-        assert call_kwargs["run_at"] is None
+        store.add.assert_called_once()
+        entry_arg = store.add.call_args.args[0]
+        assert entry_arg.cron == "0 8 * * 1"
+        assert entry_arg.run_at is None
 
         sent_text = ctx.send.call_args[0][0]
-        assert "task-cron-99" in sent_text
+        assert entry_arg.id in sent_text
         assert "recorrente" in sent_text.lower() or "0 8 * * 1" in sent_text
 
     async def test_agendar_invalid_quando_sends_error(self):
@@ -153,11 +176,11 @@ class TestAgendar:
         ctx.send.assert_awaited_once()
         sent_text = ctx.send.call_args[0][0]
         assert "❌" in sent_text
-        store.create.assert_not_awaited()
+        store.add.assert_not_called()
 
     async def test_agendar_store_error_sends_warning(self):
         store = _make_store()
-        store.create = AsyncMock(side_effect=RuntimeError("DB unavailable"))
+        store.add = MagicMock(side_effect=RuntimeError("DB unavailable"))
         cog = _make_cog(store)
         ctx = _make_ctx()
 
@@ -184,12 +207,13 @@ class TestAgendamentos:
 
     async def test_agendamentos_lists_tasks(self):
         tasks = [
-            {"id": "t1", "prompt": "checar logs", "cron_expr": "0 * * * *", "run_at": None, "status": "pending"},
-            {"id": "t2", "prompt": "backup db", "cron_expr": None, "run_at": "2025-09-01T00:00:00", "status": "pending"},
+            _fake_entry(id="t1", prompt="checar logs", cron="0 * * * *", created_by="discord:1"),
+            _fake_entry(id="t2", prompt="backup db", cron=None,
+                        run_at=datetime(2025, 9, 1, tzinfo=timezone.utc), created_by="discord:1"),
         ]
         store = _make_store(list_return=tasks)
         cog = _make_cog(store)
-        ctx = _make_ctx()
+        ctx = _make_ctx(author_id=1)
 
         await _call_agendamentos(cog, ctx)
 
@@ -200,7 +224,7 @@ class TestAgendamentos:
 
     async def test_agendamentos_store_error_sends_warning(self):
         store = _make_store()
-        store.list_all = AsyncMock(side_effect=RuntimeError("DB error"))
+        store.list_all = MagicMock(side_effect=RuntimeError("DB error"))
         cog = _make_cog(store)
         ctx = _make_ctx()
 
@@ -216,19 +240,20 @@ class TestAgendamentos:
 
 class TestCancelar:
     async def test_cancelar_existing_task_succeeds(self):
-        store = _make_store(delete_return=True)
+        entry = _fake_entry(id="task-001", created_by="discord:1")
+        store = _make_store(get_return=entry, remove_return=True)
         cog = _make_cog(store)
-        ctx = _make_ctx()
+        ctx = _make_ctx(author_id=1)
 
         await _call_cancelar(cog, ctx, "task-001")
 
-        store.delete.assert_awaited_once_with("task-001")
+        store.remove.assert_called_once_with("task-001")
         sent_text = ctx.send.call_args[0][0]
         assert "✅" in sent_text
         assert "task-001" in sent_text
 
     async def test_cancelar_not_found_sends_not_found(self):
-        store = _make_store(delete_return=False)
+        store = _make_store(get_return=None)
         cog = _make_cog(store)
         ctx = _make_ctx()
 
@@ -247,13 +272,14 @@ class TestCancelar:
 
         sent_text = ctx.send.call_args[0][0]
         assert "❌" in sent_text
-        store.delete.assert_not_awaited()
+        store.remove.assert_not_called()
 
     async def test_cancelar_store_error_sends_warning(self):
-        store = _make_store()
-        store.delete = AsyncMock(side_effect=RuntimeError("DB crash"))
+        entry = _fake_entry(id="task-xyz", created_by="discord:1")
+        store = _make_store(get_return=entry)
+        store.remove = MagicMock(side_effect=RuntimeError("DB crash"))
         cog = _make_cog(store)
-        ctx = _make_ctx()
+        ctx = _make_ctx(author_id=1)
 
         await _call_cancelar(cog, ctx, "task-xyz")
 

@@ -113,13 +113,15 @@ async def test_duration_121s_triggers_chunking(audio_server, budget):
     att = Attachment(kind=AttachmentKind.AUDIO, url=f"{audio_server}/audio.ogg", mime="audio/ogg")
     chunk_calls = []
 
-    async def mock_chunk(chunk_bytes, index, filename, mime):
+    async def mock_chunk(chunk_bytes, index, filename, mime, **kw):
         chunk_calls.append(index)
         return f"chunk{index}"
 
     with patch.object(svc, "_estimate_duration_seconds", return_value=121.0):
-        with patch.object(svc, "_transcribe_chunk", new=AsyncMock(side_effect=mock_chunk)):
-            result = await svc.transcribe(att)
+        with patch.object(TranscriptionService, "_split_audio_by_time",
+                          side_effect=lambda audio, cs, mime, n: [audio] * n):
+            with patch.object(svc, "_transcribe_chunk", new=AsyncMock(side_effect=mock_chunk)):
+                result = await svc.transcribe(att)
 
     assert chunk_calls, "no chunk transcription was attempted"
     assert "chunk0" in result

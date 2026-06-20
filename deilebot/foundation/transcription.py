@@ -223,26 +223,104 @@ class TranscriptionService:
         result = await client.audio.transcriptions.create(**kwargs)
         return result.text
 
+    @staticmethod
+    def _split_audio_by_time(
+        audio_bytes: bytes, chunk_seconds: int, mime: str, num_chunks: int
+    ) -> list:
+        """Split audio into ``num_chunks`` independently-decodable segments via PyAV.
+
+        Each returned bytes object is a complete container with its own header,
+        decodable without context from other chunks. Requires ``av>=11``.
+        """
+        try:
+            import av  # type: ignore[import]
+        except ImportError as e:
+            raise TranscriptionError(
+                "PyAV (av) não instalado — necessário para chunking temporal. "
+                "Instale com: pip install 'av>=11' (ver pyproject.toml [transcription])"
+            ) from e
+
+        src = av.open(io.BytesIO(audio_bytes))
+        try:
+            in_stream = next((s for s in src.streams if s.type == "audio"), None)
+            if in_stream is None:
+                raise TranscriptionError("nenhum stream de áudio encontrado no container")
+
+            # Collect all packets first so we can determine actual duration
+            all_packets = [p for p in src.demux(in_stream) if p.dts is not None]
+        finally:
+            src.close()
+
+        if not all_packets:
+            return [audio_bytes]
+
+        total_pts = all_packets[-1].dts - all_packets[0].dts
+        if total_pts <= 0 or num_chunks <= 1:
+            return [audio_bytes]
+
+        pts_per_chunk = total_pts / num_chunks
+        # Build groups of packets by time boundary
+        groups: list = []
+        current: list = []
+        base_pts = all_packets[0].dts
+        for pkt in all_packets:
+            target_group = min(int((pkt.dts - base_pts) / pts_per_chunk), num_chunks - 1)
+            while len(groups) <= target_group:
+                groups.append([])
+            groups[target_group].append(pkt)
+        # Merge empty groups into previous
+        merged: list = []
+        for g in groups:
+            if g:
+                merged.append(g)
+        if not merged:
+            return [audio_bytes]
+
+        chunks_bytes = []
+        for group in merged:
+            buf = io.BytesIO()
+            src2 = av.open(io.BytesIO(audio_bytes))
+            try:
+                in_s = next(s for s in src2.streams if s.type == "audio")
+                out = av.open(buf, mode="w", format="ogg")
+                try:
+                    out_s = out.add_stream(template=in_s)
+                    group_dts = {p.dts for p in group}
+                    for pkt in src2.demux(in_s):
+                        if pkt.dts is None or pkt.dts not in group_dts:
+                            continue
+                        for frame in pkt.decode():
+                            frame.pts = None
+                            for out_pkt in out_s.encode(frame):
+                                out.mux(out_pkt)
+                    for out_pkt in out_s.encode(None):
+                        out.mux(out_pkt)
+                finally:
+                    out.close()
+            finally:
+                src2.close()
+            chunks_bytes.append(buf.getvalue())
+
+        return chunks_bytes or [audio_bytes]
+
     async def _transcribe_chunk(
-        self, chunk_bytes: bytes, index: int, filename: str, mime: str
+        self, chunk_bytes: bytes, index: int, filename: str, mime: str,
+        *, language: Optional[str] = None
     ) -> str:
         """Transcribe a single chunk. Isolated for mocking in tests."""
-        return await self._call_whisper(chunk_bytes, filename, mime)
+        return await self._call_whisper(chunk_bytes, filename, mime, language=language)
 
     async def _transcribe_chunked(
-        self, audio_bytes: bytes, duration_s: float, filename: str, mime: str
+        self, audio_bytes: bytes, duration_s: float, filename: str, mime: str,
+        *, language: Optional[str] = None
     ) -> str:
-        """Split audio proportionally and transcribe chunks in parallel."""
+        """Split audio by time window (via PyAV) and transcribe chunks in parallel."""
         chunk_seconds = self._settings.chunk_seconds
         num_chunks = math.ceil(duration_s / chunk_seconds)
-
-        total_bytes = len(audio_bytes)
-        base_size = total_bytes // num_chunks
-        chunks = []
-        for i in range(num_chunks):
-            start = i * base_size
-            end = start + base_size if i < num_chunks - 1 else total_bytes
-            chunks.append(audio_bytes[start:end])
+        chunks = await asyncio.to_thread(
+            self._split_audio_by_time, audio_bytes, chunk_seconds, mime, num_chunks
+        )
+        num_chunks = len(chunks)
 
         sem = asyncio.Semaphore(self._settings.chunk_max_concurrency)
         timeout_s = float(self._settings.chunk_timeout_seconds)
@@ -252,7 +330,7 @@ class TranscriptionService:
             async with sem:
                 try:
                     return await asyncio.wait_for(
-                        self._transcribe_chunk(chunk, idx, filename, mime),
+                        self._transcribe_chunk(chunk, idx, filename, mime, language=language),
                         timeout=timeout_s,
                     )
                 except Exception as exc:
@@ -297,12 +375,12 @@ class TranscriptionService:
 
         ``language`` is an ISO-639-1 code (e.g. "pt", "en") or None for Whisper
         auto-detection. Resolve it via ``settings.resolve_language`` before calling.
+        The language is propagated to every chunk in the chunked path.
 
-        For audio with duration > max_duration_seconds, splits into chunks and
-        transcribes in parallel (the chunked path currently relies on Whisper
-        auto-detection per chunk). Raises TranscriptionError on any failure —
-        never swallows silently. Raises TranscriptionRejectedError when the
-        monthly budget is exhausted.
+        For audio with duration > max_duration_seconds, splits into independently-
+        decodable chunks by time window (via PyAV) and transcribes in parallel.
+        Raises TranscriptionError on any failure — never swallows silently.
+        Raises TranscriptionRejectedError when the monthly budget is exhausted.
         """
         if not att.url:
             raise TranscriptionError("attachment has no URL")
@@ -335,7 +413,9 @@ class TranscriptionService:
 
         if duration_s > self._settings.max_duration_seconds:
             try:
-                return await self._transcribe_chunked(audio_bytes, duration_s, filename, mime)
+                return await self._transcribe_chunked(
+                    audio_bytes, duration_s, filename, mime, language=language
+                )
             except TranscriptionError:
                 raise
             except Exception as e:

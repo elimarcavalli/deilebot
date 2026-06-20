@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
 from pydantic import SecretStr
 
@@ -256,45 +257,45 @@ class TestWebhookRoutes:
         register_routes(app, _adapter(verify_token))
         return app
 
-    async def test_get_verify_ok(self, aiohttp_client):
-        client = await aiohttp_client(self._make_app())
-        resp = await client.get(
-            "/webhook/whatsapp",
-            params={
-                "hub.mode": "subscribe",
-                "hub.verify_token": "secret",
-                "hub.challenge": "my_challenge_123",
-            },
-        )
-        assert resp.status == 200
-        body = await resp.text()
-        assert body == "my_challenge_123"
+    async def test_get_verify_ok(self):
+        async with TestClient(TestServer(self._make_app())) as client:
+            resp = await client.get(
+                "/webhook/whatsapp",
+                params={
+                    "hub.mode": "subscribe",
+                    "hub.verify_token": "secret",
+                    "hub.challenge": "my_challenge_123",
+                },
+            )
+            assert resp.status == 200
+            body = await resp.text()
+            assert body == "my_challenge_123"
 
-    async def test_get_verify_wrong_token(self, aiohttp_client):
-        client = await aiohttp_client(self._make_app())
-        resp = await client.get(
-            "/webhook/whatsapp",
-            params={
-                "hub.mode": "subscribe",
-                "hub.verify_token": "wrong",
-                "hub.challenge": "x",
-            },
-        )
-        assert resp.status == 403
+    async def test_get_verify_wrong_token(self):
+        async with TestClient(TestServer(self._make_app())) as client:
+            resp = await client.get(
+                "/webhook/whatsapp",
+                params={
+                    "hub.mode": "subscribe",
+                    "hub.verify_token": "wrong",
+                    "hub.challenge": "x",
+                },
+            )
+            assert resp.status == 403
 
-    async def test_get_verify_bad_mode(self, aiohttp_client):
-        client = await aiohttp_client(self._make_app())
-        resp = await client.get(
-            "/webhook/whatsapp",
-            params={
-                "hub.mode": "unsubscribe",
-                "hub.verify_token": "secret",
-                "hub.challenge": "x",
-            },
-        )
-        assert resp.status == 400
+    async def test_get_verify_bad_mode(self):
+        async with TestClient(TestServer(self._make_app())) as client:
+            resp = await client.get(
+                "/webhook/whatsapp",
+                params={
+                    "hub.mode": "unsubscribe",
+                    "hub.verify_token": "secret",
+                    "hub.challenge": "x",
+                },
+            )
+            assert resp.status == 400
 
-    async def test_post_dispatch_ok(self, aiohttp_client):
+    async def test_post_dispatch_ok(self):
         received = []
 
         adapter = _adapter()
@@ -304,36 +305,35 @@ class TestWebhookRoutes:
 
         app = web.Application()
         register_routes(app, adapter)
-        client = await aiohttp_client(app)
-
-        resp = await client.post("/webhook/whatsapp", json=_text_payload())
-        assert resp.status == 200
-        data = await resp.json()
-        assert data["status"] == "ok"
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/webhook/whatsapp", json=_text_payload())
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ok"
         assert len(received) == 1
 
-    async def test_post_invalid_json(self, aiohttp_client):
-        client = await aiohttp_client(self._make_app())
-        resp = await client.post(
-            "/webhook/whatsapp",
-            data=b"not json",
-            headers={"Content-Type": "application/json"},
-        )
-        assert resp.status == 400
+    async def test_post_invalid_json(self):
+        async with TestClient(TestServer(self._make_app())) as client:
+            resp = await client.post(
+                "/webhook/whatsapp",
+                data=b"not json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
 
-    async def test_custom_path(self, aiohttp_client):
+    async def test_custom_path(self):
         app = web.Application()
         register_routes(app, _adapter(), path="/custom/hook")
-        client = await aiohttp_client(app)
-        resp = await client.get(
-            "/custom/hook",
-            params={
-                "hub.mode": "subscribe",
-                "hub.verify_token": "secret",
-                "hub.challenge": "abc",
-            },
-        )
-        assert resp.status == 200
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/custom/hook",
+                params={
+                    "hub.mode": "subscribe",
+                    "hub.verify_token": "secret",
+                    "hub.challenge": "abc",
+                },
+            )
+            assert resp.status == 200
 
 
 # ---------------------------------------------------------------------------
@@ -461,65 +461,65 @@ class TestWebhookSignature:
         register_routes(app, adapter)
         return app
 
-    async def test_valid_signature_passes(self, aiohttp_client):
+    async def test_valid_signature_passes(self):
         body = b'{"object":"whatsapp_business_account","entry":[]}'
         sig = self._make_sig(body, "appsecret")
         app = self._make_app_with_secret()
-        client = await aiohttp_client(app)
-        resp = await client.post(
-            "/webhook/whatsapp",
-            data=body,
-            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig},
-        )
-        assert resp.status == 200
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/webhook/whatsapp",
+                data=body,
+                headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig},
+            )
+            assert resp.status == 200
 
-    async def test_invalid_signature_rejected(self, aiohttp_client):
+    async def test_invalid_signature_rejected(self):
         body = b'{"object":"whatsapp_business_account","entry":[]}'
         app = self._make_app_with_secret()
-        client = await aiohttp_client(app)
-        resp = await client.post(
-            "/webhook/whatsapp",
-            data=body,
-            headers={"Content-Type": "application/json", "X-Hub-Signature-256": "sha256=deadbeef"},
-        )
-        assert resp.status == 403
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/webhook/whatsapp",
+                data=body,
+                headers={"Content-Type": "application/json", "X-Hub-Signature-256": "sha256=deadbeef"},
+            )
+            assert resp.status == 403
 
-    async def test_missing_signature_header_rejected(self, aiohttp_client):
+    async def test_missing_signature_header_rejected(self):
         body = b'{"object":"whatsapp_business_account","entry":[]}'
         app = self._make_app_with_secret()
-        client = await aiohttp_client(app)
-        resp = await client.post(
-            "/webhook/whatsapp",
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        assert resp.status == 403
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/webhook/whatsapp",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 403
 
-    async def test_no_app_secret_skips_check(self, aiohttp_client):
+    async def test_no_app_secret_skips_check(self):
         """Without app_secret configured, signature check is skipped (opt-in)."""
         from deilebot.providers.whatsapp.adapter import WhatsAppAdapter
         app = web.Application()
         register_routes(app, WhatsAppAdapter(_settings()))  # no app_secret
-        client = await aiohttp_client(app)
         body = b'{"entry":[]}'
-        resp = await client.post(
-            "/webhook/whatsapp",
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        assert resp.status == 200
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/webhook/whatsapp",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 200
 
-    async def test_empty_verify_token_rejected(self, aiohttp_client):
+    async def test_empty_verify_token_rejected(self):
         """Empty verify_token must not pass the handshake."""
         from deilebot.providers.whatsapp.adapter import WhatsAppAdapter
         app = web.Application()
         register_routes(app, WhatsAppAdapter(_settings(verify_token="")))
-        client = await aiohttp_client(app)
-        resp = await client.get(
-            "/webhook/whatsapp",
-            params={"hub.mode": "subscribe", "hub.verify_token": "", "hub.challenge": "x"},
-        )
-        assert resp.status == 403
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/webhook/whatsapp",
+                params={"hub.mode": "subscribe", "hub.verify_token": "", "hub.challenge": "x"},
+            )
+            assert resp.status == 403
 
 
 # ---------------------------------------------------------------------------
