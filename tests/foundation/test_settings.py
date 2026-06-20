@@ -61,13 +61,54 @@ class TestGetBotSettings:
         assert a is not b
 
 
+class TestForgeSettings:
+    """AC-5: ForgeSettings carrega blocos github+gitlab; BotSettings.github NÃO existe."""
+
+    def test_forge_settings_defaults(self):
+        from deilebot.foundation.settings import ForgeSettings, ForgeProviderSettings
+
+        fs = ForgeSettings()
+        assert fs.github.host == "github.com"
+        assert fs.github.oauth_scope == "repo"
+        assert fs.github.timeout == 15.0
+        assert fs.gitlab.host == "gitlab.com"
+        assert "api" in fs.gitlab.oauth_scope
+
+    def test_bot_settings_has_forge_not_github(self):
+        """BotSettings.github não existe mais — quebra direta (AC-5)."""
+        from deilebot.foundation.settings import BotSettings
+
+        settings = BotSettings()
+        assert hasattr(settings, "forge"), "BotSettings.forge não existe!"
+        assert not hasattr(settings, "github"), (
+            "BotSettings.github ainda existe — deveria ter sido removido (AC-5 quebra direta)"
+        )
+
+    def test_forge_provider_settings_timeout(self):
+        from deilebot.foundation.settings import ForgeProviderSettings
+
+        s = ForgeProviderSettings(host="gitlab.myorg.com", timeout=30.0)
+        assert s.timeout == 30.0
+        assert s.host == "gitlab.myorg.com"
+
+    def test_gitlab_env_token_readable(self, monkeypatch):
+        """GITLAB_TOKEN / GL_TOKEN lidos do env (via _build_settings)."""
+        monkeypatch.setenv("GITLAB_TOKEN", "glpat-env-test")
+        reset_bot_settings_cache()
+        # Não testamos o token em si (não está em settings), mas verificamos
+        # que o _build_settings não quebra com a env var presente.
+        from deilebot.foundation.settings import get_bot_settings
+        s = get_bot_settings()
+        assert s.forge.gitlab is not None
+
+
 class TestNoProvidersImportInFoundation:
     """Sanity: foundation must not import deilebot.providers (F6)."""
 
     def test_no_provider_imports(self):
         import pathlib
 
-        foundation_dir = pathlib.Path(__file__).parent.parent.parent / "foundation"
+        foundation_dir = pathlib.Path(__file__).parent.parent.parent / "deilebot" / "foundation"
         for py in foundation_dir.rglob("*.py"):
             text = py.read_text(encoding="utf-8")
             assert "from deilebot.providers" not in text, f"{py} imports providers"
