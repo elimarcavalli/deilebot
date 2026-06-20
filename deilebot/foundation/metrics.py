@@ -15,12 +15,21 @@ def _label_key(labels: Mapping[str, Any]) -> str:
     return ",".join(f"{k}={v}" for k, v in sorted(labels.items())) if labels else ""
 
 
+_DEFAULT_HISTOGRAM_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0)
+
+
 class MetricsCollector:
     def __init__(self):
         self._counters: Dict[str, Dict[str, int]] = {}
         self._gauges: Dict[str, Dict[str, float]] = {}
         self._histograms: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._histogram_buckets: Dict[str, tuple] = {}
         self._lock = Lock()
+
+    def configure_histogram(self, name: str, buckets: tuple) -> None:
+        """Set custom bucket boundaries for a histogram before first observation."""
+        with self._lock:
+            self._histogram_buckets[name] = tuple(sorted(buckets))
 
     def inc(self, name: str, labels: Optional[Mapping[str, Any]] = None, value: int = 1) -> None:
         labels = labels or {}
@@ -60,7 +69,7 @@ class MetricsCollector:
                 entry["min"] = value
             if entry["max"] is None or value > entry["max"]:
                 entry["max"] = value
-            for boundary in (0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0):
+            for boundary in self._histogram_buckets.get(name, _DEFAULT_HISTOGRAM_BUCKETS):
                 if value <= boundary:
                     entry["buckets"][str(boundary)] = entry["buckets"].get(str(boundary), 0) + 1
 

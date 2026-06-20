@@ -19,6 +19,10 @@ class TranscriptionError(Exception):
     """Raised for any STT failure; caught by the pipeline, never propagated."""
 
 
+class TranscriptionRejectedError(TranscriptionError):
+    """Raised when transcription is blocked by the monthly budget cap."""
+
+
 class TranscriptionService:
     def __init__(
         self,
@@ -28,6 +32,10 @@ class TranscriptionService:
         self._settings = settings
         self._budget = budget
         self._logger = get_logger("transcription")
+
+    async def get_used_minutes(self) -> float:
+        """Return cumulative transcription minutes for the current calendar month."""
+        return await self._budget.get_used_minutes()
 
     def _get_api_key(self) -> Optional[str]:
         return os.environ.get("DEILE_BOT_TRANSCRIPTION_API_KEY")
@@ -79,6 +87,7 @@ class TranscriptionService:
         """Download att.url, enforce limits, call Whisper. Returns transcript text.
 
         Raises TranscriptionError on any failure — never swallows silently.
+        Raises TranscriptionRejectedError when monthly budget is exhausted.
         """
         if not att.url:
             raise TranscriptionError("attachment has no URL")
@@ -95,7 +104,7 @@ class TranscriptionService:
             duration_s, self._settings.max_minutes_per_month
         )
         if not allowed:
-            raise TranscriptionError(
+            raise TranscriptionRejectedError(
                 f"teto mensal de transcrição atingido ({self._settings.max_minutes_per_month} min)"
             )
 
