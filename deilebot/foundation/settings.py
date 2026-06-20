@@ -90,16 +90,36 @@ class PersonaSettings(BaseModel):
     rules: List[PersonaRule] = Field(default_factory=list)
 
 
-class GitHubSettings(BaseModel):
-    """Config do login GitHub (ver o cog /github_login).
+class ForgeProviderSettings(BaseModel):
+    """Config por forge (GitHub ou GitLab).
 
-    ``oauth_client_id`` é o Client ID *público* de um GitHub OAuth App
-    registrado — não é segredo. Vazio desativa o método OAuth
-    (device flow); o método PAT continua funcionando sem config.
+    ``oauth_client_id`` é o Client ID *público* de um OAuth App registrado
+    — não é segredo. Vazio desativa o método OAuth.
+    ``timeout`` controla o aiohttp.ClientTimeout (segundos) — self-hosted
+    lento pode precisar de valor maior.
     """
 
+    host: str = ""
     oauth_client_id: str = ""
-    oauth_scope: str = "repo"
+    oauth_scope: str = ""
+    timeout: float = 15.0
+
+
+class ForgeSettings(BaseModel):
+    """Config de auth multi-forge — substitui GitHubSettings (quebra direta)."""
+
+    github: ForgeProviderSettings = Field(
+        default_factory=lambda: ForgeProviderSettings(
+            host="github.com",
+            oauth_scope="repo",
+        )
+    )
+    gitlab: ForgeProviderSettings = Field(
+        default_factory=lambda: ForgeProviderSettings(
+            host="gitlab.com",
+            oauth_scope="api read_repository write_repository",
+        )
+    )
 
 
 class BotSettings(BaseModel):
@@ -115,7 +135,7 @@ class BotSettings(BaseModel):
     providers: ProviderRegistrySettings = Field(default_factory=ProviderRegistrySettings)
     permissions: PermissionsSettings = Field(default_factory=PermissionsSettings)
     personas: PersonaSettings = Field(default_factory=PersonaSettings)
-    github: GitHubSettings = Field(default_factory=GitHubSettings)
+    forge: ForgeSettings = Field(default_factory=ForgeSettings)
 
 
 _YAML_PATH = Path("./config/deilebot.yaml")
@@ -159,18 +179,45 @@ def _drop_env_overridden(data: Dict[str, Any], cls) -> Dict[str, Any]:
 
 
 def _build_settings() -> BotSettings:
+    import os as _os
+
     yaml_data = _load_yaml()
     foundation_data = _drop_env_overridden(yaml_data.get("foundation", {}), FoundationSettings)
     providers_data = yaml_data.get("providers", {})
     permissions_data = yaml_data.get("permissions", {})
     personas_data = yaml_data.get("personas", {})
-    github_data = yaml_data.get("github", {})
+
+    # Support both `forge:` block (new) and legacy `github:` block (migration).
+    forge_yaml = yaml_data.get("forge", {})
+    legacy_github = yaml_data.get("github", {})
+
+    # Build per-provider settings dicts.
+    github_data = {**legacy_github, **(forge_yaml.get("github", {}))}
+    gitlab_data = forge_yaml.get("gitlab", {})
+
+    # Env var injection for tokens (not in settings, but used by cogs/wizard).
+    # GITLAB_TOKEN / GL_TOKEN can override the host default at runtime.
+    _gitlab_token_env = _os.environ.get("GITLAB_TOKEN") or _os.environ.get("GL_TOKEN") or ""
+
+    github_settings = ForgeProviderSettings(
+        host=github_data.get("host", "github.com"),
+        oauth_client_id=github_data.get("oauth_client_id", ""),
+        oauth_scope=github_data.get("oauth_scope", "repo"),
+        timeout=float(github_data.get("timeout", 15.0)),
+    )
+    gitlab_settings = ForgeProviderSettings(
+        host=gitlab_data.get("host", "gitlab.com"),
+        oauth_client_id=gitlab_data.get("oauth_client_id", ""),
+        oauth_scope=gitlab_data.get("oauth_scope", "api read_repository write_repository"),
+        timeout=float(gitlab_data.get("timeout", 15.0)),
+    )
+
     return BotSettings(
         foundation=FoundationSettings(**foundation_data),
         providers=ProviderRegistrySettings(**providers_data),
         permissions=PermissionsSettings(**permissions_data),
         personas=PersonaSettings(**personas_data),
-        github=GitHubSettings(**github_data),
+        forge=ForgeSettings(github=github_settings, gitlab=gitlab_settings),
     )
 
 

@@ -35,7 +35,7 @@ A tabela reflete **o que está efetivamente implementado**.
 | **Provedor: WhatsApp** | 🟡 Base | Adapter + webhooks (WhatsApp Cloud API) implementados; não amarrado na CLI. |
 | **Provedor: Meta (IG/Messenger)** | 🟡 Base | Adapters e endpoints de API estruturados; não amarrados na CLI. |
 | **Wizard de instalação** | 🟢 100% | `deilebot setup` — configuração interativa do zero (local ou container). |
-| **Login GitHub via Discord** | 🟢 100% | `/github_login` (PAT ou OAuth device flow), `/github_status`, `/github_logout`. |
+| **Login forge via Discord** | 🟢 100% | Grupo `/git` (login/status/logout/ideia) — GitHub (PAT + OAuth device flow) + GitLab (PAT). **Breaking:** `/github_*` removidos. |
 | **Pipeline Ingress/Egress** | 🟢 100% | Identidade, permissões, rate limit, intent, persona, capabilities, formatação, retries. |
 | **Persistência & memória** | 🟢 100% | SQLite para conversas, histórico, perfis de usuário e sessões. |
 | **Resiliência (DLQ + Event Bus)** | 🟢 100% | Dead-Letter Queue para falhas de API + barramento assíncrono interno. |
@@ -365,23 +365,48 @@ Cada cog registra seus comandos; o sync com o Discord é automático no `on_read
 | `/capabilities` | capabilities | Capacidades do provedor atual. |
 | `/status` | status | Saúde do bot, worker e modelo. |
 | `/deile <prompt>` | agent | Despacha a tarefa para o `deile-worker` isolado (sujeito ao safety gate). |
-| `/ideia <texto>` | idea | Submete uma ideia → abre uma issue INTENT no GitHub. |
+| `/git login` | git | Autentica o bot num forge: **GitHub** (PAT ou OAuth) ou **GitLab** (PAT). Owner-only. |
+| `/git status` | git | Status de autenticação de cada forge (revalidado ao vivo, 3 estados). Owner-only. |
+| `/git logout [forge]` | git | Remove credencial de um forge (ou de ambos). Owner-only. |
+| `/git ideia <texto>` | git | Submete uma ideia → abre uma issue INTENT no forge configurado. |
 | `/historico`, `/historico_users`, `/historico_canais`, `/historico_export`, `/memoria` | history | Consulta de histórico e memória. |
 | `/agendar`, `/agendamentos`, `/cancelar` | cron | Agendamento de tarefas em linguagem natural. |
 | `/forget_me` | privacy | Apaga todo o histórico e memória do próprio usuário (self-service). |
-| `/github_login`, `/github_status`, `/github_logout` | github_auth | **Login GitHub (owner-only)** — ver abaixo. |
 | `/dlq`, `/forget`, `/sessions`, `/metrics`, `/audit` | admin | Operações de owner (DLQ, privacidade, sessões, métricas, auditoria). |
 
-### 🔐 Login GitHub (`/github_login`)
+> ⚠️ **Breaking change (V1):** `/github_login`, `/github_status` e `/github_logout` foram **removidos** e substituídos pelo grupo `/git`. Tentar os comandos antigos retorna uma mensagem de migração.
 
-Autentica o git do bot no GitHub. **Owner-only.** Dois métodos, à escolha:
+### 🔐 Login forge (`/git login`)
 
-- **`/github_login metodo:pat`** — abre um modal do Discord onde o operador cola um Personal Access Token (clássico `ghp_` ou fine-grained `github_pat_`). O token é validado em `GET /user` e nunca aparece no histórico do canal.
-- **`/github_login metodo:oauth`** — fluxo OAuth device flow (RFC 8628): o bot mostra um código + URL, o operador autoriza no navegador e o bot avisa por DM. Exige um GitHub OAuth App registrado (`github.oauth_client_id` no `deilebot.yaml`); sem ele, use o método PAT.
-- **`/github_status`** — mostra o login atual (revalidado ao vivo) ou "não autenticado".
-- **`/github_logout`** — remove a credencial.
+Autentica o git do bot num forge. **Owner-only.** Abre um modal com dois campos:
 
-O token é instalado em `~/.git-credentials` (modo 0600); apenas metadados não-sensíveis (login, método, data) vão para `~/.deile/github_auth.json` — o token nunca vai para variável de ambiente, argv ou conversation store.
+- **Forge** — `github` ou `gitlab`
+- **Personal Access Token** — cole o PAT (GitHub: `ghp_…`/`github_pat_…`; GitLab: `glpat-…`/`glsoat-…`)
+
+O token é **validado ao vivo** antes de ser gravado — um PAT inválido nunca chega ao disco.
+
+#### Login GitHub (via `/git login`)
+
+- Forge=`github`, cole o PAT clássico (`ghp_`) ou fine-grained (`github_pat_`).
+- Método OAuth device flow (RFC 8628) disponível apenas via código (V1).
+- Exige `forge.github.oauth_client_id` no `deilebot.yaml` para usar OAuth.
+
+#### Login GitLab (via `/git login`)
+
+- Forge=`gitlab`, cole o PAT pessoal (`glpat-`) ou service account (`glsoat-`).
+- OAuth GitLab é roadmap (V3) — use PAT em V1.
+- Self-hosted: configure `forge.gitlab.host` no `deilebot.yaml`.
+- **Pré-requisito de NetworkPolicy:** para self-hosted, libere o egress para o host do GitLab na NetworkPolicy do Kubernetes (`default-deny` bloqueia conexões externas por padrão).
+
+#### `/git status` — 3 estados por forge
+
+| Estado | Significado |
+| :--- | :--- |
+| ✅ válido | Token presente e `GET /user` retorna 200 |
+| ⚠️ inválido | Token presente mas `GET /user` retorna 401 (botão "Reautenticar") |
+| ⛔ não configurado | Sem token gravado |
+
+O token é instalado em `~/.git-credentials` (modo 0600), **uma linha por host** — GitHub e GitLab coexistem no mesmo arquivo. Metadados não-sensíveis em `~/.deile/forge_auth.json` (chaves `github` e `gitlab`). O token nunca vai para variável de ambiente, argv ou conversation store.
 
 ---
 

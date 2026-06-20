@@ -86,23 +86,18 @@ class DiscordAdapter(ProviderAdapter):
                     from deilebot.providers.discord.cogs.reaction_cog import \
                         ReactionCog
 
-                    from deilebot.providers.discord.cogs.idea_cog import IdeaCog
-
                     if "AgentCog" not in cog_names:
                         await client.add_cog(AgentCog(client, self.runtime, self))
                     if "CapabilitiesCog" not in cog_names:
                         await client.add_cog(CapabilitiesCog(client, self.runtime, self))
                     if "ReactionCog" not in cog_names:
                         await client.add_cog(ReactionCog(client, self.runtime, self))
-                    if "IdeaCog" not in cog_names:
-                        await client.add_cog(IdeaCog(client, self.runtime, self))
                     if "AdminCog" not in cog_names:
                         from deilebot.providers.discord.cogs.admin_cog import AdminCog
                         await client.add_cog(AdminCog(client, self.runtime, self))
-                    if "GitHubAuthCog" not in cog_names:
-                        from deilebot.providers.discord.cogs.github_auth_cog import \
-                            GitHubAuthCog
-                        await client.add_cog(GitHubAuthCog(client, self.runtime, self))
+                    if "GitCog" not in cog_names:
+                        from deilebot.providers.discord.cogs.git_cog import GitCog
+                        await client.add_cog(GitCog(client, self.runtime, self))
                     if "StatusCog" not in cog_names:
                         from deilebot.providers.discord.cogs.status_cog import StatusCog
                         await client.add_cog(StatusCog(client, self.runtime, self))
