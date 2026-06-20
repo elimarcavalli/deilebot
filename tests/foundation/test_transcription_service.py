@@ -107,22 +107,22 @@ async def test_duration_119s_passes(audio_server, budget):
     assert api_called, "API was not called for 119s audio"
 
 
-async def test_duration_121s_rejected_before_api(audio_server, budget):
-    """121s is over the 120s limit — API must NOT be called."""
+async def test_duration_121s_triggers_chunking(audio_server, budget):
+    """121s > 120s limit → chunking path; _call_whisper called per chunk, not hard-rejected."""
     svc = _make_svc(budget, max_duration=120)
     att = Attachment(kind=AttachmentKind.AUDIO, url=f"{audio_server}/audio.ogg", mime="audio/ogg")
-    api_called = []
+    chunk_calls = []
 
-    async def mock_whisper(*_a, **_kw):
-        api_called.append(True)
-        return "transcript"
+    async def mock_chunk(chunk_bytes, index, filename, mime):
+        chunk_calls.append(index)
+        return f"chunk{index}"
 
     with patch.object(svc, "_estimate_duration_seconds", return_value=121.0):
-        with patch.object(svc, "_call_whisper", new=AsyncMock(side_effect=mock_whisper)):
-            with pytest.raises(TranscriptionError, match="muito longo"):
-                await svc.transcribe(att)
+        with patch.object(svc, "_transcribe_chunk", new=AsyncMock(side_effect=mock_chunk)):
+            result = await svc.transcribe(att)
 
-    assert not api_called, "API was called despite duration exceeding max"
+    assert chunk_calls, "no chunk transcription was attempted"
+    assert "chunk0" in result
 
 
 # ── AC-6: graceful failure — each class of error raises TranscriptionError ───

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 try:
     from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +27,23 @@ class TranscriptionSettings(BaseModel):
     enabled: bool = False
     max_duration_seconds: int = 120
     max_minutes_per_month: int = 60
+
+    # Chunking — áudios > max_duration_seconds são divididos em janelas
+    chunk_seconds: int = 60
+    chunk_overlap_seconds: int = 0  # LOCKED em 0 no V1 (AC-6)
+    chunk_on_partial_failure: Literal["fail", "skip", "best_effort"] = "fail"
+    chunk_max_concurrency: int = 3
+    chunk_timeout_seconds: int = 90
+
+    @field_validator("chunk_overlap_seconds")
+    @classmethod
+    def _no_overlap_v1(cls, v: int) -> int:
+        if v > 0:
+            raise ValueError(
+                "chunk_overlap_seconds > 0 não é suportado no V1; "
+                "concat overlap-aware é roadmap. Use chunk_overlap_seconds=0."
+            )
+        return v
 
 
 class FoundationSettings(BaseSettings):
