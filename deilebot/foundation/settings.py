@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 try:
     from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,10 +23,56 @@ except ImportError:  # pragma: no cover
 class TranscriptionSettings(BaseModel):
     """STT config (non-secret). api_key MUST come from env DEILE_BOT_TRANSCRIPTION_API_KEY."""
 
-    engine: Literal["openai"] = "openai"
+    engine: Literal["openai", "local"] = "openai"
     enabled: bool = False
     max_duration_seconds: int = 120
     max_minutes_per_month: int = 60
+    echo_transcript: bool = False
+    echo_max_chars: int = 200
+    # local engine (faster-whisper) config
+    local_model_path: Optional[Path] = None
+    local_device: Literal["cpu", "cuda"] = "cpu"
+    local_compute_type: str = "int8"
+    local_timeout_seconds: int = 60
+    language: Literal["auto", "pt", "en", "inherit_guild"] = "auto"
+
+    # Chunking — áudios > max_duration_seconds são divididos em janelas
+    chunk_seconds: int = 60
+    chunk_overlap_seconds: int = 0  # LOCKED em 0 no V1 (AC-6)
+    chunk_on_partial_failure: Literal["fail", "skip", "best_effort"] = "fail"
+    chunk_max_concurrency: int = 3
+    chunk_timeout_seconds: int = 90
+
+    @field_validator("chunk_overlap_seconds")
+    @classmethod
+    def _no_overlap_v1(cls, v: int) -> int:
+        if v > 0:
+            raise ValueError(
+                "chunk_overlap_seconds > 0 não é suportado no V1; "
+                "concat overlap-aware é roadmap. Use chunk_overlap_seconds=0."
+            )
+        return v
+
+
+def resolve_language(setting: str, guild_locale: Optional[str]) -> Optional[str]:
+    """Map TranscriptionSettings.language + guild_locale → Whisper language code.
+
+    Returns an ISO-639-1 code ("pt" or "en") or None (Whisper auto-detects).
+    Pure function — no I/O, safe to call from tests without mocks.
+    """
+    if setting in ("pt", "en"):
+        return setting
+    if setting == "auto":
+        return None
+    # inherit_guild: map BCP-47 to ISO-639-1, only pt and en supported
+    if setting == "inherit_guild":
+        if not guild_locale:
+            return None
+        primary = guild_locale.split("-")[0].lower()
+        if primary in ("pt", "en"):
+            return primary
+        return None
+    return None
 
 
 class FoundationSettings(BaseSettings):

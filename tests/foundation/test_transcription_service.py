@@ -107,22 +107,22 @@ async def test_duration_119s_passes(audio_server, budget):
     assert api_called, "API was not called for 119s audio"
 
 
-async def test_duration_121s_rejected_before_api(audio_server, budget):
-    """121s is over the 120s limit — API must NOT be called."""
+async def test_duration_121s_triggers_chunking(audio_server, budget):
+    """121s > 120s limit → chunking path; _call_whisper called per chunk, not hard-rejected."""
     svc = _make_svc(budget, max_duration=120)
     att = Attachment(kind=AttachmentKind.AUDIO, url=f"{audio_server}/audio.ogg", mime="audio/ogg")
-    api_called = []
+    chunk_calls = []
 
-    async def mock_whisper(*_a, **_kw):
-        api_called.append(True)
-        return "transcript"
+    async def mock_chunk(chunk_bytes, index, filename, mime):
+        chunk_calls.append(index)
+        return f"chunk{index}"
 
     with patch.object(svc, "_estimate_duration_seconds", return_value=121.0):
-        with patch.object(svc, "_call_whisper", new=AsyncMock(side_effect=mock_whisper)):
-            with pytest.raises(TranscriptionError, match="muito longo"):
-                await svc.transcribe(att)
+        with patch.object(svc, "_transcribe_chunk", new=AsyncMock(side_effect=mock_chunk)):
+            result = await svc.transcribe(att)
 
-    assert not api_called, "API was called despite duration exceeding max"
+    assert chunk_calls, "no chunk transcription was attempted"
+    assert "chunk0" in result
 
 
 # ── AC-6: graceful failure — each class of error raises TranscriptionError ───
@@ -177,3 +177,50 @@ async def test_missing_api_key_raises(audio_server, budget, monkeypatch):
         # _call_whisper calls _get_api_key internally — don't mock _call_whisper
         with pytest.raises(TranscriptionError, match="API_KEY"):
             await svc.transcribe(att)
+
+
+# ── AC-31: language parameter forwarded to _call_whisper ─────────────────────
+
+async def test_transcribe_passes_language_to_whisper(audio_server, budget):
+    """AC-31: language kwarg forwarded to _call_whisper when not None."""
+    svc = _make_svc(budget)
+    att = Attachment(
+        kind=AttachmentKind.AUDIO,
+        url=f"{audio_server}/audio.ogg",
+        mime="audio/ogg",
+        filename="voice.ogg",
+    )
+    captured_kwargs: list[dict] = []
+
+    async def _mock_whisper(audio_bytes, filename, mime, *, language=None):
+        captured_kwargs.append({"language": language})
+        return "olá mundo"
+
+    with patch.object(svc, "_estimate_duration_seconds", return_value=10.0):
+        with patch.object(svc, "_call_whisper", new=AsyncMock(side_effect=_mock_whisper)):
+            result = await svc.transcribe(att, language="pt")
+
+    assert result == "olá mundo"
+    assert captured_kwargs[0]["language"] == "pt"
+
+
+async def test_transcribe_language_none_not_forwarded(audio_server, budget):
+    """AC-31: language=None → _call_whisper receives language=None (auto-detect)."""
+    svc = _make_svc(budget)
+    att = Attachment(
+        kind=AttachmentKind.AUDIO,
+        url=f"{audio_server}/audio.ogg",
+        mime="audio/ogg",
+        filename="voice.ogg",
+    )
+    captured_kwargs: list[dict] = []
+
+    async def _mock_whisper(audio_bytes, filename, mime, *, language=None):
+        captured_kwargs.append({"language": language})
+        return "transcript"
+
+    with patch.object(svc, "_estimate_duration_seconds", return_value=10.0):
+        with patch.object(svc, "_call_whisper", new=AsyncMock(side_effect=_mock_whisper)):
+            await svc.transcribe(att, language=None)
+
+    assert captured_kwargs[0]["language"] is None
