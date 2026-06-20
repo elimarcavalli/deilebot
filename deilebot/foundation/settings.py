@@ -27,6 +27,28 @@ class TranscriptionSettings(BaseModel):
     enabled: bool = False
     max_duration_seconds: int = 120
     max_minutes_per_month: int = 60
+    language: Literal["auto", "pt", "en", "inherit_guild"] = "auto"
+
+
+def resolve_language(setting: str, guild_locale: Optional[str]) -> Optional[str]:
+    """Map TranscriptionSettings.language + guild_locale → Whisper language code.
+
+    Returns an ISO-639-1 code ("pt" or "en") or None (Whisper auto-detects).
+    Pure function — no I/O, safe to call from tests without mocks.
+    """
+    if setting in ("pt", "en"):
+        return setting
+    if setting == "auto":
+        return None
+    # inherit_guild: map BCP-47 to ISO-639-1, only pt and en supported
+    if setting == "inherit_guild":
+        if not guild_locale:
+            return None
+        primary = guild_locale.split("-")[0].lower()
+        if primary in ("pt", "en"):
+            return primary
+        return None
+    return None
 
 
 class FoundationSettings(BaseSettings):

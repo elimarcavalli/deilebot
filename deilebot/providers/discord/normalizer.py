@@ -84,11 +84,13 @@ class DiscordNormalizer:
         sent = getattr(message, "created_at", None) or datetime.now(timezone.utc)
         if sent.tzinfo is None:
             sent = sent.replace(tzinfo=timezone.utc)
+        guild = getattr(message, "guild", None)
         raw = MappingProxyType(
             {
                 "id": getattr(message, "id", None),
                 "channel_id": getattr(ch_obj, "id", None),
-                "guild_id": getattr(getattr(message, "guild", None), "id", None),
+                "guild_id": getattr(guild, "id", None),
+                "guild_locale": getattr(guild, "preferred_locale", None),
                 "type": type(message).__name__,
             }
         )
