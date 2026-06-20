@@ -367,6 +367,7 @@ class IngressPipeline:
         metrics: MetricsCollector,
         egress: EgressPipeline,
         agent_meta: AgentMetaProvider,
+        transcription_service=None,
     ):
         self.identity = identity
         self.permissions = permissions
@@ -381,6 +382,7 @@ class IngressPipeline:
         self.metrics = metrics
         self.egress = egress
         self.agent_meta = agent_meta
+        self._transcription_service = transcription_service
         self._logger = get_logger("ingress")
 
     def _load_monitor_client(self):
@@ -569,7 +571,10 @@ class IngressPipeline:
         # Cap: 4 MiB per image (≈5.4 MiB base64) to avoid bloating the LLM
         # context. Larger attachments fall back to URL-only and DEILE gets
         # to decide whether to try the (possibly expired) URL.
-        att_summaries = await self._materialize_attachments(env.attachments)
+        att_summaries = await self._materialize_attachments(
+            env.attachments,
+            transcription_service=self._transcription_service,
+        )
         # Append a <bot_context> block so the LLM (not just the tools) can
         # see channel/owner info and — critically — inbound attachments.
         # Without this the agent sees the attachments only via tool ctx,
@@ -593,7 +598,12 @@ class IngressPipeline:
         if att_summaries:
             ctx_lines.append("attachments:")
             for s in att_summaries:
-                marker = "base64_inline" if s.get("data_base64") else "url_only"
+                if s.get("transcript"):
+                    marker = "transcribed"
+                elif s.get("data_base64"):
+                    marker = "base64_inline"
+                else:
+                    marker = "url_only"
                 ctx_lines.append(
                     f"  - kind={s['kind']} mime={s.get('mime') or '?'} "
                     f"filename={s.get('filename') or '?'} "
@@ -610,15 +620,25 @@ class IngressPipeline:
                     ctx_lines.append(f"    url: {s['url']}")
                 if s.get("download_error"):
                     ctx_lines.append(f"    download_error: {s['download_error']}")
+                if s.get("transcript"):
+                    ctx_lines.append(f"    transcript: {s['transcript'][:300]}")
+                if s.get("skip_reason"):
+                    ctx_lines.append(f"    skip_reason: {s['skip_reason']}")
         ctx_lines.append("</bot_context>")
         extra = extra + "\n\n" + "\n".join(ctx_lines)
         bot_settings = get_bot_settings().foundation
-        # 10. agent invoke
+        # 10. agent invoke — prefix any audio transcripts to inbound_text
+        transcripts = [s["transcript"] for s in att_summaries if s.get("transcript")]
+        if transcripts:
+            joined = " ".join(transcripts)
+            inbound_text = f"[áudio transcrito] {joined}\n{env.text}".strip()
+        else:
+            inbound_text = env.text
         inv = AgentInvocation(
             bot_user_id=user.bot_user_id,
             persona=persona,
             forced_model=bot_settings.forced_model,
-            inbound_text=env.text,
+            inbound_text=inbound_text,
             default_model=bot_settings.default_model,
             inbound_attachments=env.attachments,
             history=history,
@@ -774,14 +794,14 @@ class IngressPipeline:
     _IMAGE_INLINE_BYTES_LIMIT = 4 * 1024 * 1024
     _IMAGE_DOWNLOAD_TIMEOUT_S = 12.0
 
-    async def _materialize_attachments(self, attachments) -> list:
+    async def _materialize_attachments(self, attachments, *, transcription_service=None) -> list:
         """Build the bot_context.attachments list.
 
         For image kind, eagerly fetch + base64-encode (so DEILE doesn't
         have to re-download from a possibly-expired Discord CDN URL).
-        For non-image kinds (or oversize/failed images), keep URL-only.
-        Errors are recorded inline as `download_error` so the agent can
-        decide what to do (skip, retry via URL, ask user).
+        For audio kind with transcription enabled, download + STT via Whisper.
+        For non-image/audio kinds (or failed/oversize), keep URL-only.
+        Errors are recorded inline as `download_error`/`skip_reason`.
         """
         import asyncio
         import base64 as _b64
@@ -802,6 +822,18 @@ class IngressPipeline:
                 "filename": att.filename,
                 "size_bytes": att.size_bytes,
             }
+            # Audio: attempt STT when transcription_service is wired and enabled
+            if kind_str.upper() == "AUDIO" and transcription_service is not None:
+                if transcription_service._settings.enabled and att.url:
+                    try:
+                        transcript = await transcription_service.transcribe(att)
+                        entry["transcript"] = transcript
+                    except Exception as exc:
+                        entry["skip_reason"] = f"STT: {exc}"
+                        self._logger.warning(
+                            "transcription failed for %s: %s", att.url, exc
+                        )
+                return entry
             # Only image-kind attachments get inlined; other kinds keep
             # the URL so a future tool can decide.
             if kind_str.upper() != "IMAGE" or not att.url:

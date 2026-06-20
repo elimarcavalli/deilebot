@@ -20,6 +20,15 @@ except ImportError:  # pragma: no cover
     SettingsConfigDict = None  # type: ignore[assignment]
 
 
+class TranscriptionSettings(BaseModel):
+    """STT config (non-secret). api_key MUST come from env DEILE_BOT_TRANSCRIPTION_API_KEY."""
+
+    engine: Literal["openai"] = "openai"
+    enabled: bool = False
+    max_duration_seconds: int = 120
+    max_minutes_per_month: int = 60
+
+
 class FoundationSettings(BaseSettings):
     sqlite_path: Path = Path("./data/deilebot.sqlite")
     sessions_sqlite_path: Path = Path("./data/deile_sessions.sqlite")
@@ -116,6 +125,7 @@ class BotSettings(BaseModel):
     permissions: PermissionsSettings = Field(default_factory=PermissionsSettings)
     personas: PersonaSettings = Field(default_factory=PersonaSettings)
     github: GitHubSettings = Field(default_factory=GitHubSettings)
+    transcription: TranscriptionSettings = Field(default_factory=TranscriptionSettings)
 
 
 _YAML_PATH = Path("./config/deilebot.yaml")
@@ -165,12 +175,14 @@ def _build_settings() -> BotSettings:
     permissions_data = yaml_data.get("permissions", {})
     personas_data = yaml_data.get("personas", {})
     github_data = yaml_data.get("github", {})
+    transcription_data = yaml_data.get("transcription", {})
     return BotSettings(
         foundation=FoundationSettings(**foundation_data),
         providers=ProviderRegistrySettings(**providers_data),
         permissions=PermissionsSettings(**permissions_data),
         personas=PersonaSettings(**personas_data),
         github=GitHubSettings(**github_data),
+        transcription=TranscriptionSettings(**transcription_data),
     )
 
 
