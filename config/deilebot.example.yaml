@@ -60,6 +60,13 @@ transcription:
   enabled: false
   max_duration_seconds: 120
   max_minutes_per_month: 60
+  # Engine local (faster-whisper/CTranslate2) — descomente para usar GPU ou CPU offline.
+  # Ver docs/transcription-local-slo.md e README.md (seção "Engine de Transcrição Local").
+  # local_model_path: /path/to/ctranslate2-model   # diretório contendo model.bin
+  # local_device: cpu                               # cpu (default seguro) | cuda (GPU)
+  # local_compute_type: int8                        # int8 (CPU) | float16 (GPU)
+  # local_cuda_fallback: fail                       # fail (default) | cpu (fallback auto)
+  # local_timeout_seconds: 60
 
 # Allowlist de repositórios que o deile-shell / deile-worker podem clonar
 # via git (modo container). Globs seguem as regras de fnmatch do Python.
