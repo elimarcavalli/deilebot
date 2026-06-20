@@ -482,11 +482,13 @@ class HistoryCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         user_id="bot_user_id ULID, 'discord:<id>' ou snowflake — em branco = você",
+        channel_id="snowflake do canal Discord para filtrar a sessão (sem este arg: lista todas)",
     )
     async def memoria(
         self,
         ctx: commands.Context,
         user_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
     ) -> None:
         await ctx.defer(ephemeral=True)
         if not self._is_owner(ctx.author.id):
@@ -517,29 +519,56 @@ class HistoryCog(commands.Cog):
             )
             return
 
-        session_id = f"bot_session_{target.bot_user_id}"
+        # Query all sessions for this user (covers legacy + all channel-scoped).
+        from deilebot.foundation.memory_ops import _session_user_prefix
+        prefix = _session_user_prefix(target.bot_user_id)
         try:
             conn = sqlite3.connect(str(sessions_path))
             cur = conn.execute(
-                "SELECT working_directory, context_data_json, created_at, last_used_at "
-                "FROM persisted_session WHERE session_id = ?",
-                (session_id,),
+                "SELECT session_id, working_directory, context_data_json, "
+                "created_at, last_used_at "
+                "FROM persisted_session "
+                "WHERE session_id = ? OR session_id LIKE ? "
+                "ORDER BY last_used_at DESC",
+                (prefix, prefix + "__%"),
             )
-            row = cur.fetchone()
+            rows = cur.fetchall()
             conn.close()
         except sqlite3.Error as exc:
             await ctx.send(f"⚠️ Erro lendo DB de sessões: {exc}", ephemeral=True)
             return
 
-        if row is None:
+        if not rows:
             await ctx.send(
-                f"📭 DEILE ainda não tem working memory pra **{target.display_name}** "
-                f"(session_id=`{session_id}`).",
+                f"📭 DEILE ainda não tem working memory pra **{target.display_name}**.",
                 ephemeral=True,
             )
             return
 
-        wd, ctx_json, created_at, last_used_at = row
+        # Filter by channel_id when requested.
+        if channel_id:
+            rows = [r for r in rows if channel_id in r[0]]
+            if not rows:
+                await ctx.send(
+                    f"📭 Nenhuma sessão de **{target.display_name}** "
+                    f"para o canal `{channel_id}`.",
+                    ephemeral=True,
+                )
+                return
+
+        # When multiple sessions exist without a channel filter, list them.
+        if len(rows) > 1 and not channel_id:
+            lines = [f"🧠 **{len(rows)} sessões de {target.display_name}:**\n"]
+            for sid, _wd, _cj, created, last_used in rows:
+                lines.append(f"- `{sid}` — last_used: `{last_used}`")
+            lines.append("\nUse `channel_id:` para ver o detalhe de uma sessão específica.")
+            msg = "\n".join(lines)
+            if len(msg) > 1900:
+                msg = msg[:1897] + "…"
+            await ctx.send(msg, ephemeral=True)
+            return
+
+        session_id, wd, ctx_json, created_at, last_used_at = rows[0]
         try:
             parsed = json.loads(ctx_json) if ctx_json else {}
         except json.JSONDecodeError:

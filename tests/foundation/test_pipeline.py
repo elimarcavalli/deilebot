@@ -352,3 +352,69 @@ class TestRenderHistoryForWorker:
             "[user] msg4", "[user] msg3", "[user] msg2",
             "[user] msg1", "[user] msg0",
         ]
+
+
+# ---------------------------------------------------------------------------
+# AC-T9 — end-to-end session-id isolation through the real pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestSessionIsolationEndToEnd:
+    """Proves the WIRING: pipeline → AgentInvocation → bridge.invoke uses the
+    correct per-(user, channel) session_id in the actual invoke call (AC-T9).
+    """
+
+    async def test_invocation_session_scoped_by_channel(self, store):
+        """DM and GROUP envelopes for the same user → distinct session ids."""
+        bridge = FakeBridge()
+        pipeline, adapter, _, _, _ = _wire(store, bridge=bridge)
+
+        author = make_user(bot_user_id="TESTUID01", provider_user_id="p-1")
+        await store.upsert_user(author)
+        # GROUP messages must mention the bot for HeuristicIntentClassifier to respond.
+        bot_mention = make_user(provider_user_id=adapter.self_user_id, bot_user_id="bot-self")
+
+        env_dm = make_envelope(
+            author=author,
+            channel=make_channel(scope=ChannelScope.DM, provider_channel_id="dm-001"),
+            text="oi DEILE",
+        )
+        env_grp = make_envelope(
+            author=author,
+            channel=make_channel(scope=ChannelScope.GROUP, provider_channel_id="grp-002"),
+            text="oi DEILE",
+            mentions=(bot_mention,),
+        )
+
+        await pipeline.handle(env_dm, adapter)
+        await pipeline.handle(env_grp, adapter)
+
+        assert len(bridge.invocations) == 2
+        inv_dm, inv_grp = bridge.invocations
+
+        from deilebot.foundation.agent_bridge import _session_id_for
+        sid_dm = _session_id_for(inv_dm)
+        sid_grp = _session_id_for(inv_grp)
+
+        assert sid_dm != sid_grp, "DM and GROUP must produce distinct session ids"
+        assert "DM" in sid_dm
+        assert "GROUP" in sid_grp
+
+    async def test_same_channel_two_turns_stable_session_id(self, store):
+        """Two turns in the same channel → same session id both times (AC-T4)."""
+        bridge = FakeBridge()
+        pipeline, adapter, _, _, _ = _wire(store, bridge=bridge)
+
+        author = make_user(bot_user_id="TESTUID02", provider_user_id="p-2")
+        await store.upsert_user(author)
+
+        ch = make_channel(scope=ChannelScope.DM, provider_channel_id="dm-stable")
+        env1 = make_envelope(author=author, channel=ch, text="oi")
+        env2 = make_envelope(author=author, channel=ch, text="tudo bem")
+
+        await pipeline.handle(env1, adapter)
+        await pipeline.handle(env2, adapter)
+
+        assert len(bridge.invocations) == 2
+        from deilebot.foundation.agent_bridge import _session_id_for
+        assert _session_id_for(bridge.invocations[0]) == _session_id_for(bridge.invocations[1])
