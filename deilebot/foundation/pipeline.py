@@ -79,6 +79,15 @@ def _is_cluster_question(text: str) -> bool:
     return bool(_CLUSTER_TERM_RE.search(t) and _CLUSTER_QUESTION_HINT_RE.search(t))
 
 
+def _build_transcript_echo(transcript: str, max_chars: int) -> str:
+    """Return the echo prefix for the reply when echo_transcript is enabled."""
+    if len(transcript) > max_chars:
+        text = transcript[:max_chars] + "…"
+    else:
+        text = transcript
+    return f'🎙️ Transcrevi seu áudio: "{text}"\n'
+
+
 def render_history_for_worker(
     history: List[StoredMessage],
     *,
@@ -158,6 +167,7 @@ class EgressPipeline:
         persona: str,
         *,
         target_bot_user_id: Optional[str] = None,
+        transcript_echo: Optional[str] = None,
     ) -> None:
         formatter = self._formatter_for(adapter.name)
         rendered = formatter.render(response.markup) if response.markup else response.text
@@ -165,6 +175,8 @@ class EgressPipeline:
         last_msg_id: Optional[str] = env.message_id
         target_id = target_bot_user_id or env.author.bot_user_id
         for i, chunk in enumerate(chunks):
+            if i == 0 and transcript_echo:
+                chunk = transcript_echo + chunk
             try:
                 msg_id = await self._send_with_retry(
                     adapter, env.channel, chunk, reply_to=last_msg_id if i == 0 else None
@@ -626,12 +638,17 @@ class IngressPipeline:
                     ctx_lines.append(f"    skip_reason: {s['skip_reason']}")
         ctx_lines.append("</bot_context>")
         extra = extra + "\n\n" + "\n".join(ctx_lines)
-        bot_settings = get_bot_settings().foundation
+        _full_settings = get_bot_settings()
+        bot_settings = _full_settings.foundation
         # 10. agent invoke — prefix any audio transcripts to inbound_text
         transcripts = [s["transcript"] for s in att_summaries if s.get("transcript")]
+        transcript_echo: Optional[str] = None
         if transcripts:
             joined = " ".join(transcripts)
             inbound_text = f"[áudio transcrito] {joined}\n{env.text}".strip()
+            t_cfg = _full_settings.transcription
+            if t_cfg.echo_transcript:
+                transcript_echo = _build_transcript_echo(joined, t_cfg.echo_max_chars)
         else:
             inbound_text = env.text
         inv = AgentInvocation(
@@ -780,7 +797,8 @@ class IngressPipeline:
         )
         # 11. egress
         await self.egress.send_response(
-            adapter, env, response, persona, target_bot_user_id=user.bot_user_id
+            adapter, env, response, persona, target_bot_user_id=user.bot_user_id,
+            transcript_echo=transcript_echo
         )
 
     # ------------------------------------------------------------------

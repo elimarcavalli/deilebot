@@ -27,6 +27,8 @@ class TranscriptionSettings(BaseModel):
     enabled: bool = False
     max_duration_seconds: int = 120
     max_minutes_per_month: int = 60
+    echo_transcript: bool = False
+    echo_max_chars: int = 200
 
 
 class FoundationSettings(BaseSettings):
