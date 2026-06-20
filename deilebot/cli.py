@@ -61,6 +61,40 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _build_transcription_service(bot_settings):
+    """Instantiate TranscriptionService from settings, or return None.
+
+    Logs WARN instead of raising when misconfigured so the bot starts in
+    degraded mode (audio treated as text-only) rather than crashing.
+    """
+    import os
+
+    from deilebot.foundation.transcription import TranscriptionService
+    from deilebot.foundation.transcription_budget import TranscriptionBudgetTracker
+
+    t_cfg = bot_settings.transcription
+    if not t_cfg.enabled:
+        return None
+
+    if t_cfg.engine == "openai" and not os.environ.get("DEILE_BOT_TRANSCRIPTION_API_KEY"):
+        logger.warning(
+            "transcription.enabled=true engine=openai mas DEILE_BOT_TRANSCRIPTION_API_KEY"
+            " não configurado — transcrição de áudio desativada até a chave ser fornecida"
+        )
+        return None
+
+    try:
+        budget = TranscriptionBudgetTracker(bot_settings.foundation.sqlite_path)
+        return TranscriptionService(t_cfg, budget)
+    except Exception as exc:
+        logger.warning(
+            "TranscriptionService não pôde ser inicializado (%s)"
+            " — transcrição de áudio desativada",
+            exc,
+        )
+        return None
+
+
 async def _run_provider(provider: str, guild_ids: Optional[List[int]] = None) -> int:
     if provider != "discord":
         print(f"provider {provider} not yet wired in this branch", file=sys.stderr)
@@ -195,6 +229,8 @@ async def _run_provider(provider: str, guild_ids: Optional[List[int]] = None) ->
     catalog = CapabilityCatalog(bot_settings)
     persona_selector = PersonaSelector(bot_settings, identity)
 
+    transcription_service = _build_transcription_service(bot_settings)
+
     formatters = {"discord": DiscordOutputFormatter()}
     egress = EgressPipeline(formatters, rate_limit, store, audit, bus, metrics, dlq)
     ingress = IngressPipeline(
@@ -202,6 +238,7 @@ async def _run_provider(provider: str, guild_ids: Optional[List[int]] = None) ->
         intent=intent, bridge=bridge, capability_catalog=catalog,
         persona_selector=persona_selector, audit=audit, event_bus=bus,
         metrics=metrics, egress=egress, agent_meta=meta,
+        transcription_service=transcription_service,
     )
     adapter = DiscordAdapter(discord_settings)
 
