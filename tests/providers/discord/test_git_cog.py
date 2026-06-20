@@ -358,3 +358,44 @@ async def test_pat_modal_timeout_shows_readable_discord_message(monkeypatch, tmp
     assert "⏱️" in embed.title
     assert "Traceback" not in (embed.description or "")
     assert "respondeu" in embed.description.lower()
+
+
+# ── AC-6: _extract_issue_url migrada para a função viva em git_cog ────────────
+
+class TestExtractIssueUrl:
+    """Cobre _extract_issue_url(text, forge) — função viva em git_cog (AC-6)."""
+
+    def test_extracts_github_issue_url(self):
+        from deilebot.providers.discord.cogs.git_cog import _extract_issue_url
+
+        text = "Issue criada em https://github.com/elimarcavalli/deile/issues/99 !"
+        assert _extract_issue_url(text, "github") == "https://github.com/elimarcavalli/deile/issues/99"
+
+    def test_returns_none_when_no_url(self):
+        from deilebot.providers.discord.cogs.git_cog import _extract_issue_url
+
+        assert _extract_issue_url("nenhuma url aqui", "github") is None
+
+    def test_ignores_non_issue_github_urls(self):
+        from deilebot.providers.discord.cogs.git_cog import _extract_issue_url
+
+        text = "see https://github.com/elimarcavalli/deile"
+        assert _extract_issue_url(text, "github") is None
+
+    def test_accepts_url_at_end_of_line(self):
+        from deilebot.providers.discord.cogs.git_cog import _extract_issue_url
+
+        text = "Criada:\nhttps://github.com/elimarcavalli/deile/issues/1\n"
+        assert _extract_issue_url(text, "github") == "https://github.com/elimarcavalli/deile/issues/1"
+
+    def test_extracts_gitlab_issue_url(self):
+        from deilebot.providers.discord.cogs.git_cog import _extract_issue_url
+
+        text = "Issue aberta em https://gitlab.com/elimarcavalli/deile/-/issues/7 pronto!"
+        assert _extract_issue_url(text, "gitlab") == "https://gitlab.com/elimarcavalli/deile/-/issues/7"
+
+    def test_gitlab_ignores_github_url(self):
+        from deilebot.providers.discord.cogs.git_cog import _extract_issue_url
+
+        text = "see https://github.com/elimarcavalli/deile/issues/99"
+        assert _extract_issue_url(text, "gitlab") is None
