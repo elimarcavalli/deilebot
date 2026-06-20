@@ -685,6 +685,7 @@ class IngressPipeline:
             history=history,
             capabilities=snap,
             extra_system_prompt=extra,
+            channel=env.channel,
             bot_context={
                 "provider": provider,
                 "channel_scope": scope,

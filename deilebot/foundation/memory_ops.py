@@ -25,6 +25,15 @@ deilebot owns no schema in ``deile_sessions.sqlite``; it reaches into the
 ``persisted_session`` table the same way ``/memoria`` already reads it —
 a short-lived ``aiosqlite`` connection. WAL + ``busy_timeout`` makes that
 safe alongside the agent's own ``SessionStore`` connection.
+
+Session-id scheme (post-fix)
+-----------------------------
+Session ids are now per (bot_user, channel):
+  ``bot_session_<bot_user_id>__<provider>_<scope>_<channel_id>``
+
+Pre-fix sessions (``bot_session_<bot_user_id>`` without ``__``) are
+considered corrupt (mixed-channel working memory) and are never re-used
+after the fix. ``forget_user`` wipes them via the prefix fan-out.
 """
 
 from __future__ import annotations
@@ -32,18 +41,39 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List
+from typing import TYPE_CHECKING, Any, List
 
 import aiosqlite
+
+if TYPE_CHECKING:
+    from deilebot.foundation.envelope import Channel
 
 _logger = logging.getLogger("deilebot.memory_ops")
 
 
-def session_id_for(bot_user_id: str) -> str:
-    """Canonical agent session id for a bot_user.
+def session_id_for(bot_user_id: str, channel: "Channel") -> str:
+    """Canonical agent session id for a (bot_user, channel) pair.
 
-    MUST stay in sync with ``agent_bridge._session_id_for`` (which builds
-    ``bot_session_<bot_user_id>``) and with ``/memoria`` in history_cog.
+    Format: ``bot_session_<bot_user_id>__<provider>_<scope>_<channel_id>``
+
+    The ``__`` double-underscore separator is unambiguous because bot_user_id
+    is a ULID (Crockford base32, no underscores). Threads get their own
+    ``provider_channel_id`` so they are naturally isolated from the parent.
+
+    Call-sites: ``agent_bridge._session_id_for`` and ``history_cog./memoria``.
+    No other code should build the ``bot_session_`` string directly.
+    """
+    return (
+        f"bot_session_{bot_user_id}"
+        f"__{channel.provider}_{channel.scope.value}_{channel.provider_channel_id}"
+    )
+
+
+def _session_user_prefix(bot_user_id: str) -> str:
+    """Prefix shared by the legacy session and all channel-scoped sessions.
+
+    ``bot_session_<uid>`` is the exact legacy id; ``bot_session_<uid>__*``
+    are the new per-channel ids. Both start with this prefix.
     """
     return f"bot_session_{bot_user_id}"
 
@@ -54,14 +84,15 @@ class ForgetResult:
 
     messages_deleted: int = 0
     private_channels: int = 0
-    session_in_memory_evicted: bool = False
-    session_persisted_deleted: bool = False
+    # Counts (not bools) — with N sessions per user, multiple may be removed.
+    session_in_memory_evicted: int = 0
+    session_persisted_deleted: int = 0
     errors: List[str] = field(default_factory=list)
 
     @property
     def session_cleared(self) -> bool:
         """True if any agent working-memory copy (RAM or disk) was removed."""
-        return self.session_in_memory_evicted or self.session_persisted_deleted
+        return self.session_in_memory_evicted > 0 or self.session_persisted_deleted > 0
 
 
 def _sessions_db_path() -> Path:
@@ -75,26 +106,28 @@ def _sessions_db_path() -> Path:
         return Path("/home/deile/data/deile_sessions.sqlite")
 
 
-async def _delete_persisted_session(session_id: str) -> bool:
-    """Delete one row from the agent's ``persisted_session`` table.
+async def _delete_persisted_sessions_for_user(bot_user_id: str) -> int:
+    """Delete all persisted sessions that belong to a user.
 
-    Returns True if a row was removed. A missing DB file (agent never ran
-    with persisted sessions) is not an error — there is simply nothing to
-    forget, so it returns False.
+    Covers both the legacy exact id (``bot_session_<uid>``) and all
+    channel-scoped ids (``bot_session_<uid>__*``). Returns the number of
+    rows removed. A missing DB file returns 0 (nothing to forget).
     """
     path = _sessions_db_path()
     if not path.exists():
-        return False
+        return 0
+    prefix = _session_user_prefix(bot_user_id)
     async with aiosqlite.connect(path) as db:
         # Coexist with the agent's own SessionStore connection (WAL mode).
         await db.execute("PRAGMA busy_timeout=5000;")
         cursor = await db.execute(
-            "DELETE FROM persisted_session WHERE session_id = ?", (session_id,)
+            "DELETE FROM persisted_session WHERE session_id = ? OR session_id LIKE ?",
+            (prefix, prefix + "__%"),
         )
         removed = cursor.rowcount or 0
         await cursor.close()
         await db.commit()
-        return removed > 0
+        return removed
 
 
 async def forget_user(
@@ -113,6 +146,11 @@ async def forget_user(
 
     Never raises: each step is isolated; failures land in ``result.errors``
     so the caller can report a partial wipe honestly instead of crashing.
+
+    Fan-out: with per-channel sessions, one user may have N sessions (one per
+    DM + one per group). All are wiped — both RAM and disk — by matching the
+    ``bot_session_<uid>`` prefix (covers legacy exact id and all ``__<chan>``
+    variants). ``ForgetResult`` carries the exact count removed from each store.
     """
     result = ForgetResult()
 
@@ -125,10 +163,7 @@ async def forget_user(
         _logger.exception("forget_user: conversation_store wipe failed")
         result.errors.append(f"transcript: {type(exc).__name__}: {exc}")
 
-    sid = session_id_for(bot_user_id)
-
-    # The oneshot_subprocess bridge keeps no session — nothing in RAM and
-    # nothing persisted under this sid. Skip cleanly.
+    # The oneshot_subprocess bridge keeps no session — skip cleanly.
     agent_provider = getattr(bridge, "_agent_provider", None)
     if agent_provider is None:
         return result
@@ -140,22 +175,33 @@ async def forget_user(
         result.errors.append(f"agent: {type(exc).__name__}: {exc}")
         agent = None
 
-    # 2. Evict the LIVE in-memory session FIRST. Doing this before the row
-    #    delete means no concurrent ``flush_persisted_sessions`` can
-    #    re-write the row in the gap between the two steps.
+    prefix = _session_user_prefix(bot_user_id)
+
+    # 2. Evict ALL in-memory sessions for this user FIRST (before the row
+    #    delete, so no concurrent flush can re-write them in the gap).
     if agent is not None:
         try:
+            all_sids = list(getattr(agent, "_sessions", {}).keys())
+            to_evict = [
+                s for s in all_sids
+                if s == prefix or s.startswith(prefix + "__")
+            ]
             if hasattr(agent, "delete_session"):
-                result.session_in_memory_evicted = bool(
-                    agent.delete_session(sid)
-                )
+                for s in to_evict:
+                    try:
+                        if agent.delete_session(s):
+                            result.session_in_memory_evicted += 1
+                    except Exception:  # noqa: BLE001
+                        pass
         except Exception as exc:  # noqa: BLE001
             _logger.exception("forget_user: in-memory session evict failed")
             result.errors.append(f"session_ram: {type(exc).__name__}: {exc}")
 
-    # 3. Delete the persisted row from deile_sessions.sqlite.
+    # 3. Delete ALL persisted rows for this user from deile_sessions.sqlite.
     try:
-        result.session_persisted_deleted = await _delete_persisted_session(sid)
+        result.session_persisted_deleted = await _delete_persisted_sessions_for_user(
+            bot_user_id
+        )
     except Exception as exc:  # noqa: BLE001
         _logger.exception("forget_user: persisted session delete failed")
         result.errors.append(f"session_db: {type(exc).__name__}: {exc}")

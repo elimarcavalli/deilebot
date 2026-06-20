@@ -88,8 +88,8 @@ class AdminCog(commands.Cog):
             f"🧹 forget `{bot_user_id}` — "
             f"{result.messages_deleted} msg(s) em "
             f"{result.private_channels} conversa(s) privada(s); "
-            f"sessão RAM={'sim' if result.session_in_memory_evicted else 'não'}, "
-            f"sessão persistida={'sim' if result.session_persisted_deleted else 'não'}"
+            f"sessões RAM={result.session_in_memory_evicted}, "
+            f"sessões persistidas={result.session_persisted_deleted}"
         )
         if result.errors:
             msg += "\n⚠️ " + "; ".join(result.errors)

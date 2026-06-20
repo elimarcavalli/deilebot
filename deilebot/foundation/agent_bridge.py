@@ -1,7 +1,7 @@
 """AgentBridge — invoke DEILE in-process or via oneshot subprocess.
 
 Two implementations:
-- InProcessAgentBridge: keeps a DeileAgent and uses session_id == bot_session_<bot_user_id>
+- InProcessAgentBridge: session per (bot_user, channel) via session_id_for()
 - OneshotSubprocessAgentBridge: runs `python3 deile.py "<msg>"` per call (isolated)
 
 Both honor `extra_system_prompt` and `bot_context` injection points.
@@ -23,7 +23,7 @@ from typing import Any, Awaitable, Callable, List, Mapping, Optional, Tuple
 from deile.common.markup_ast import MarkupAST
 from deilebot.foundation.capabilities import CapabilitySnapshot
 from deilebot.foundation.conversation_store import StoredMessage
-from deilebot.foundation.envelope import Attachment
+from deilebot.foundation.envelope import Attachment, Channel
 from deilebot.foundation.exceptions import (AgentInvocationError,
                                              AgentInvocationTimeout)
 from deilebot.foundation.logging import get_logger
@@ -80,6 +80,9 @@ class AgentInvocation:
     extra_system_prompt: str = ""
     bot_context: Mapping[str, Any] = field(default_factory=dict)
     timeout_seconds: int = 120
+    # channel is required for per-(user, channel) session isolation.
+    # session_id may be passed directly to override the derived value.
+    channel: Optional[Channel] = None
     session_id: Optional[str] = None
 
 
@@ -99,9 +102,22 @@ class AgentBridge(ABC):
 
 
 def _session_id_for(inv: AgentInvocation) -> str:
+    """Derive the canonical session id for an invocation.
+
+    Priority:
+    1. ``inv.session_id`` — explicit override (used in tests / admin).
+    2. ``inv.channel`` — per-(user, channel) key via the canonical helper.
+    3. Fallback: legacy per-user prefix (no channel component; for backward
+       compat when channel is unavailable — uses the same prefix helper so
+       the ``bot_session_`` format string lives only in ``memory_ops``).
+    """
     if inv.session_id:
         return inv.session_id
-    return f"bot_session_{inv.bot_user_id}"
+    from deilebot.foundation.memory_ops import (session_id_for,
+                                                _session_user_prefix)
+    if inv.channel is not None:
+        return session_id_for(inv.bot_user_id, inv.channel)
+    return _session_user_prefix(inv.bot_user_id)
 
 
 def _sanitize_extra_prompt(prompt: str) -> str:
@@ -116,7 +132,7 @@ def _sanitize_extra_prompt(prompt: str) -> str:
 
 
 class InProcessAgentBridge(AgentBridge):
-    """Invoke DeileAgent in-process; session per bot_user_id (persisted opt-in)."""
+    """Invoke DeileAgent in-process; session per (bot_user, channel)."""
 
     def __init__(
         self,
@@ -131,6 +147,17 @@ class InProcessAgentBridge(AgentBridge):
     async def invoke(self, inv: AgentInvocation) -> AgentResponse:
         agent = await self._agent_provider()
         session_id = _session_id_for(inv)
+
+        channel_scope = inv.channel.scope.value if inv.channel else "unknown"
+        channel_id = inv.channel.provider_channel_id if inv.channel else "unknown"
+        self._logger.debug(
+            "agent invocation: bot_user_id=%s channel_scope=%s channel_id=%s session_id=%s",
+            inv.bot_user_id,
+            channel_scope,
+            channel_id,
+            session_id,
+        )
+
         if hasattr(agent, "get_or_create_session"):
             try:
                 await agent.get_or_create_session(session_id, persisted=self._persisted)
