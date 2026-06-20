@@ -592,7 +592,7 @@ async def test_ac9_openai_engine_unchanged(budget):
 
     whisper_called = []
 
-    async def _mock_whisper(audio_bytes, filename, mime):
+    async def _mock_whisper(audio_bytes, filename, mime, *, language=None):
         whisper_called.append(True)
         return "openai result"
 
