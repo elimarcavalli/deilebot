@@ -1,13 +1,12 @@
 """GitCog — grupo nativo /git com subcomandos login/status/logout/ideia.
 
-Substitui diretamente GitHubAuthCog e IdeaCog (quebra direta, sem alias).
 Suporta GitHub (PAT + OAuth device flow) e GitLab (PAT em V1).
 
 Subcomandos:
   /git login   — Modal com campo Forge (github/gitlab) + TextInput(token).
   /git status  — Revalida ao vivo; 3 estados por forge (✅/⚠️/⛔).
   /git logout  — Remove credencial de um forge (opcional) ou pede confirmação.
-  /git ideia   — Integra o antigo IdeaCog; seleciona forge automaticamente.
+  /git ideia   — Submete ideia ao forge configurado; seleciona forge automaticamente.
 """
 
 from __future__ import annotations

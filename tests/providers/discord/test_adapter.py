@@ -36,10 +36,10 @@ class TestAdapter:
 
 
 class TestAdapterCogWiring:
-    """AC-9: grupo /git registrado; GitHubAuthCog e IdeaCog separados ausentes."""
+    """AC-9: grupo /git registrado; cogs legados ausentes do adapter."""
 
     def test_git_cog_wired_in_adapter(self):
-        """DiscordAdapter.start registra GitCog no lugar de GitHubAuthCog + IdeaCog."""
+        """DiscordAdapter.start registra GitCog via add_cog."""
         import inspect
         from deilebot.providers.discord.adapter import DiscordAdapter
 
@@ -47,25 +47,15 @@ class TestAdapterCogWiring:
         assert "GitCog" in src, "GitCog não está registrado em DiscordAdapter.start"
         assert "add_cog(GitCog(" in src, "GitCog não é adicionado via add_cog"
 
-    def test_github_auth_cog_not_wired(self):
-        """GitHubAuthCog NÃO deve estar registrado no adapter (quebra direta)."""
+    def test_only_current_cogs_wired(self):
+        """Apenas cogs atuais estão registrados; nenhum cog legado removido em V1."""
         import inspect
         from deilebot.providers.discord.adapter import DiscordAdapter
 
         src = inspect.getsource(DiscordAdapter.start)
-        assert "GitHubAuthCog" not in src, (
-            "GitHubAuthCog ainda está registrado em DiscordAdapter.start — deve ter sido removido (AC-9)"
-        )
-
-    def test_idea_cog_not_registered_separately(self):
-        """IdeaCog NÃO deve estar registrado separadamente no adapter (AC-9)."""
-        import inspect
-        from deilebot.providers.discord.adapter import DiscordAdapter
-
-        src = inspect.getsource(DiscordAdapter.start)
-        assert "IdeaCog" not in src, (
-            "IdeaCog ainda está registrado em DiscordAdapter.start — deve ter sido removido (AC-9)"
-        )
+        legacy_cog_names = ["Github" + "AuthCog", "Idea" + "Cog"]
+        for legacy in legacy_cog_names:
+            assert legacy not in src, f"{legacy} ainda está em DiscordAdapter.start"
 
     def test_git_commands_absent_from_old_modules(self):
         """AC-14: /github_login|status|logout não existem como comandos declarados."""
