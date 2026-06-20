@@ -360,34 +360,9 @@ async def test_ac4_handle_local_engine_inbound_text(model_dir, budget):
 
 def test_ac5_local_files_only_passed_to_whisper_model(model_dir):
     """WhisperModel must be instantiated with local_files_only=True."""
-    settings = _make_local_settings(model_path=model_dir)
-    captured = {}
-
-    def _fake_load_model(self):
-        # Intercept at the call site within _load_model; patch the import target
-        import sys
-        # Build a fake faster_whisper module if absent
-        fake_module = MagicMock()
-
-        class FakeWhisperModel:
-            def __init__(self, path, **kw):
-                captured.update(kw)
-                captured["model_path"] = path
-
-        fake_module.WhisperModel = FakeWhisperModel
-        old = sys.modules.get("faster_whisper")
-        sys.modules["faster_whisper"] = fake_module
-        try:
-            self._load_model_real()
-        finally:
-            if old is None:
-                sys.modules.pop("faster_whisper", None)
-            else:
-                sys.modules["faster_whisper"] = old
-
-    # Directly test _load_model by faking faster_whisper in sys.modules
     import sys
-    fake_fw = MagicMock()
+
+    settings = _make_local_settings(model_path=model_dir)
     captured_ctor = {}
 
     class CapturingModel:
@@ -395,29 +370,27 @@ def test_ac5_local_files_only_passed_to_whisper_model(model_dir):
             captured_ctor.update(kwargs)
             captured_ctor["model_path"] = path
 
+    fake_fw = MagicMock()
     fake_fw.WhisperModel = CapturingModel
     old_fw = sys.modules.get("faster_whisper")
     sys.modules["faster_whisper"] = fake_fw
     try:
         with patch("deilebot.foundation.transcription._LocalWhisperBackend._load_model"):
             backend = _LocalWhisperBackend(settings)
-        # Now manually call _load_model with patched import
         backend._load_model()
-    except Exception:
-        pass
     finally:
         if old_fw is None:
             sys.modules.pop("faster_whisper", None)
         else:
             sys.modules["faster_whisper"] = old_fw
 
-    if captured_ctor:
-        assert captured_ctor.get("local_files_only") is True, (
-            f"local_files_only not True in WhisperModel call: {captured_ctor}"
-        )
-        assert str(captured_ctor.get("model_path")) == str(model_dir), (
-            "model_path passed to WhisperModel should be the configured local path"
-        )
+    assert captured_ctor, "WhisperModel was never instantiated — _load_model did not call ctor"
+    assert captured_ctor.get("local_files_only") is True, (
+        f"local_files_only not True in WhisperModel call: {captured_ctor}"
+    )
+    assert str(captured_ctor.get("model_path")) == str(model_dir), (
+        "model_path passed to WhisperModel should be the configured local path"
+    )
 
 
 def test_ac5_no_huggingface_download(model_dir):
@@ -458,17 +431,24 @@ async def test_ac6_timeout_raises_transcription_error(model_dir, budget):
 
 
 async def test_ac6_handle_timeout_degrades_gracefully(model_dir, budget):
-    """Timeout in local STT does not propagate out of handle()."""
+    """Timeout in local STT does not propagate out of handle(); real blocking used.
+
+    The test MUST fail if the asyncio.wait_for guard in _LocalWhisperBackend.transcribe
+    is removed — it relies on the real timeout machinery, not a pre-injected exception.
+    """
     settings = _make_local_settings(model_path=model_dir, timeout=1)
 
     with patch("deilebot.foundation.transcription._LocalWhisperBackend._load_model"):
         svc = TranscriptionService(settings=settings, budget=budget)
 
-    async def _hanging_transcribe(audio_bytes):
-        await asyncio.sleep(10)
+    # Real blocking: _transcribe_sync sleeps longer than the 1-second timeout.
+    # asyncio.wait_for in _LocalWhisperBackend.transcribe cancels the to_thread task
+    # and raises TranscriptionError — the pipeline.handle() must catch it and degrade.
+    def _slow_transcribe_sync(audio_bytes: bytes) -> str:
+        time.sleep(5)
         return "never"
 
-    svc._local_backend.transcribe = _hanging_transcribe
+    svc._local_backend._transcribe_sync = _slow_transcribe_sync
 
     pipeline, bridge = _build_pipeline(transcription_service=svc)
     env = _audio_envelope()
@@ -482,11 +462,8 @@ async def test_ac6_handle_timeout_degrades_gracefully(model_dir, budget):
     ):
         with patch.object(svc, "_download_audio", new=AsyncMock(return_value=b"\x00" * 100)):
             with patch.object(svc, "_estimate_duration_seconds", return_value=5.0):
-                with patch.object(svc._local_backend, "transcribe", new=AsyncMock(
-                    side_effect=TranscriptionError("transcrição local excedeu timeout de 1s")
-                )):
-                    # Must not raise
-                    await pipeline.handle(env, adapter)
+                # Must not raise — pipeline degrades gracefully
+                await pipeline.handle(env, adapter)
 
     # Agent was still invoked (degraded, not crashed)
     assert bridge.invocations, "bridge was not invoked after timeout — deadlock or crash"

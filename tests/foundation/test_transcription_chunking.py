@@ -1,13 +1,16 @@
-"""Tests for TranscriptionService chunking — issue #30.
+"""Tests for TranscriptionService chunking — issue #30 + issue #49.
 
 Covers AC-1..AC-8 via the public transcribe() entry-point.
+Issue #49 adds: temporal-split integration (AC#2) and language propagation (AC#3).
 """
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import io
 import math
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -17,6 +20,21 @@ from deilebot.foundation.transcription import TranscriptionError, TranscriptionS
 from deilebot.foundation.transcription_budget import TranscriptionBudgetTracker
 
 _FAKE_AUDIO = b"\x4f\x67\x67\x53" + b"\x00" * 60
+_AV_AVAILABLE = importlib.util.find_spec("av") is not None
+
+
+def _byte_split(audio_bytes: bytes, chunk_seconds: int, mime: str, num_chunks: int) -> list:
+    """Byte-split stub for _split_audio_by_time used in unit tests (no av needed).
+
+    Returns exactly ``num_chunks`` fake chunks so tests that verify chunk-count
+    behavior work without PyAV installed.
+    """
+    if num_chunks <= 1:
+        return [audio_bytes]
+    size = max(1, len(audio_bytes) // num_chunks)
+    chunks = [audio_bytes[i * size:(i + 1) * size] for i in range(num_chunks - 1)]
+    chunks.append(audio_bytes[(num_chunks - 1) * size:] or audio_bytes[:1])
+    return chunks
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -27,6 +45,24 @@ async def budget(tmp_path: Path) -> TranscriptionBudgetTracker:
     tracker = TranscriptionBudgetTracker(tmp_path / "budget.sqlite")
     yield tracker
     await tracker.close()
+
+
+@pytest.fixture(autouse=True)
+def _patch_split_audio(request):
+    """Patch _split_audio_by_time for all tests that don't need real PyAV.
+
+    Tests marked with ``pytest.mark.needs_av`` are excluded — they import av
+    directly and verify real decodability (AC#2 from issue #49).
+    """
+    if request.node.get_closest_marker("needs_av"):
+        yield
+        return
+    with patch.object(
+        TranscriptionService,
+        "_split_audio_by_time",
+        side_effect=_byte_split,
+    ):
+        yield
 
 
 def _make_svc(
@@ -73,7 +109,7 @@ async def test_ac1_chunk_count(budget, duration_s, chunk_s, expected_chunks):
     svc = _make_svc(budget, max_duration=60, chunk_seconds=chunk_s)
     calls = []
 
-    async def fake_chunk(chunk_bytes, index, filename, mime):
+    async def fake_chunk(chunk_bytes, index, filename, mime, **kw):
         calls.append(index)
         return f"t{index}"
 
@@ -98,7 +134,7 @@ async def test_ac2_temporal_order(budget):
     # Resolve in reverse: chunk 2 fastest, chunk 0 slowest
     delays = [0.05, 0.03, 0.01]
 
-    async def fake_chunk(chunk_bytes, index, filename, mime):
+    async def fake_chunk(chunk_bytes, index, filename, mime, **kw):
         await asyncio.sleep(delays[index])
         return texts[index]
 
@@ -126,7 +162,7 @@ async def test_ac3_partial_failure(budget, mode, expected):
     svc = _make_svc(budget, max_duration=60, chunk_seconds=60, chunk_on_partial_failure=mode)
     chunk_texts = ["um", None, "três"]  # None → fail
 
-    async def fake_chunk(chunk_bytes, index, filename, mime):
+    async def fake_chunk(chunk_bytes, index, filename, mime, **kw):
         if chunk_texts[index] is None:
             raise RuntimeError("forced failure")
         return chunk_texts[index]
@@ -161,7 +197,7 @@ async def test_ac4_concurrency_peak(budget):
     peak = 0
     lock = asyncio.Lock()
 
-    async def fake_chunk(chunk_bytes, index, filename, mime):
+    async def fake_chunk(chunk_bytes, index, filename, mime, **kw):
         nonlocal counter, peak
         async with lock:
             counter += 1
@@ -232,7 +268,7 @@ async def test_ac7_chunk_timeout_skip(budget):
         chunk_timeout_seconds=1,
     )
     # 3 chunks: index 1 times out
-    async def fake_chunk(chunk_bytes, index, filename, mime):
+    async def fake_chunk(chunk_bytes, index, filename, mime, **kw):
         if index == 1:
             await asyncio.sleep(5)  # exceeds chunk_timeout_seconds=1
         return f"t{index}"
@@ -256,7 +292,7 @@ async def test_ac7_transcribe_returns_despite_timeout(budget):
         chunk_timeout_seconds=1,
     )
 
-    async def fake_chunk(chunk_bytes, index, filename, mime):
+    async def fake_chunk(chunk_bytes, index, filename, mime, **kw):
         if index == 1:
             await asyncio.sleep(60)  # would block forever without timeout guard
         return f"t{index}"
@@ -294,7 +330,7 @@ async def test_ac8_structured_log(budget):
     logger.setLevel(logging.DEBUG)
     logger.addHandler(handler)
 
-    async def fake_chunk(chunk_bytes, index, filename, mime):
+    async def fake_chunk(chunk_bytes, index, filename, mime, **kw):
         if chunk_texts[index] is None:
             raise RuntimeError("injected failure")
         return chunk_texts[index]
@@ -315,3 +351,76 @@ async def test_ac8_structured_log(budget):
     assert rec.completed == 2, f"completed={rec.completed}"
     assert rec.failed == 1, f"failed={rec.failed}"
     assert rec.mode == "skip", f"mode={rec.mode}"
+
+# ── Issue #49 AC#2: temporal chunks decodable via PyAV ───────────────────────
+
+
+@pytest.mark.needs_av
+@pytest.mark.skipif(not _AV_AVAILABLE, reason="av not installed")
+def test_i49_ac2_pyav_chunks_decodable(tmp_path):
+    """AC#2 (issue #49): _split_audio_by_time produces chunks each decodable via PyAV.
+
+    Generates a minimal real WAV/OGG file with duration > max_duration_seconds,
+    splits it into ≥2 chunks, and asserts each chunk yields ≥1 audio frame.
+    Skipped if PyAV is not installed (CI without av wheel).
+    """
+    import struct
+    import wave
+    import av
+
+    # Build a minimal WAV: 3 seconds mono 8000Hz 16-bit = 48000 samples
+    wav_path = tmp_path / "test.wav"
+    with wave.open(str(wav_path), "w") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(8000)
+        # 3 seconds of silence
+        wf.writeframes(b"\x00" * 2 * 8000 * 3)
+    wav_bytes = wav_path.read_bytes()
+
+    # chunk_seconds=1 → ceil(3/1)=3 chunks; each should be independently decodable
+    chunks = TranscriptionService._split_audio_by_time(wav_bytes, chunk_seconds=1, mime="audio/wav", num_chunks=3)
+
+    assert len(chunks) >= 2, f"Expected ≥2 chunks, got {len(chunks)}"
+    for idx, chunk in enumerate(chunks):
+        assert chunk, f"chunk {idx} is empty"
+        try:
+            container = av.open(io.BytesIO(chunk))
+            frames = list(container.decode(audio=0))
+            container.close()
+            assert frames, f"chunk {idx} yielded 0 audio frames — header invalid or no audio"
+        except Exception as e:
+            raise AssertionError(f"chunk {idx} failed to decode via PyAV: {e}") from e
+
+
+
+# ── Issue #49 AC#3: language propagated end-to-end (real call-site) ──────────
+
+
+async def test_i49_ac3_language_propagated_through_chunking(budget):
+    """AC#3 (issue #49): transcribe(language='pt') propagates to every _call_whisper chunk.
+
+    Drives the REAL call-path transcribe→_transcribe_chunked→_transcribe_chunk→_call_whisper.
+    Unit-isolating _transcribe_chunk is insufficient (Goodhart / GC #596).
+    """
+    svc = _make_svc(budget, max_duration=60, chunk_seconds=60)
+    whisper_calls = []
+
+    async def spy_whisper(audio_bytes, filename, mime, *, language=None):
+        whisper_calls.append({"language": language})
+        return "texto"
+
+    with patch.object(svc, "_download_audio", new=AsyncMock(return_value=_FAKE_AUDIO)):
+        with patch.object(svc, "_estimate_duration_seconds", return_value=180.0):
+            with patch.object(svc, "_call_whisper", new=AsyncMock(side_effect=spy_whisper)):
+                await svc.transcribe(_att(), language="pt")
+
+    assert whisper_calls, "_call_whisper was never called — chunked path not exercised"
+    assert len(whisper_calls) >= 2, (
+        f"Expected ≥2 chunk calls (chunked path), got {len(whisper_calls)}"
+    )
+    for i, call in enumerate(whisper_calls):
+        assert call["language"] == "pt", (
+            f"chunk {i}: expected language='pt', got {call['language']!r} — "
+            "language not propagated through transcribe→_transcribe_chunked→_transcribe_chunk→_call_whisper"
+        )

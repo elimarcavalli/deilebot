@@ -27,10 +27,12 @@ discord = ["discord.py>=2.3,<3.0"]
 telegram = ["python-telegram-bot>=20"]
 whatsapp = ["httpx>=0.25"]
 meta = ["httpx>=0.25"]
+transcription = ["av>=11"]
 all-bots = [
     "discord.py>=2.3,<3.0",
     "python-telegram-bot>=20",
     "httpx>=0.25",
+    "av>=11",
 ]
 client = ["httpx>=0.25", "tenacity>=8.0", "pydantic>=2.0", "pydantic-settings>=2.0"]
 test = ["pytest>=7", "pytest-asyncio>=0.23", "pytest-aiohttp>=1.0", "httpx>=0.25"]
@@ -44,3 +46,6 @@ exclude = ["tests*", "PATCHES*", "PLANS*", "RUNS*", "logs*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "needs_av: requires PyAV (av>=11) to be installed; skipped when av is absent",
+]

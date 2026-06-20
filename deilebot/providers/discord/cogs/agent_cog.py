@@ -10,13 +10,19 @@ garantir que teste e produção exerçam o mesmo caminho.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from deilebot.foundation.envelope import ChannelScope
+from deilebot.foundation.envelope import (
+    BotUser,
+    Channel,
+    ChannelScope,
+    MessageEnvelope,
+)
 from deilebot.foundation.slash_dispatch import run_slash_dispatch
 
 _logger = logging.getLogger("deilebot.agent_cog")
@@ -30,6 +36,41 @@ class AgentCog(commands.Cog):
         self.runtime = runtime
         self.adapter = adapter
 
+    def _make_envelope(self, ctx: Any, text: str) -> MessageEnvelope:
+        """Build a force-respond MessageEnvelope from a slash command context."""
+        channel = ctx.channel
+        scope = (
+            ChannelScope.DM
+            if isinstance(channel, discord.DMChannel)
+            else ChannelScope.THREAD if isinstance(channel, discord.Thread)
+            else ChannelScope.GROUP
+        )
+        channel_name = getattr(channel, "name", None)
+        channel_id = str(channel.id)
+        user_id = str(ctx.author.id)
+        display_name = (
+            getattr(ctx.author, "display_name", None) or ctx.author.name
+        )
+        message_id = str(getattr(getattr(ctx, "message", None), "id", None) or f"slash:{user_id}")
+        return MessageEnvelope(
+            message_id=message_id,
+            channel=Channel(
+                provider="discord",
+                provider_channel_id=channel_id,
+                name=channel_name,
+                scope=scope,
+            ),
+            author=BotUser(
+                bot_user_id=f"discord:{user_id}",
+                provider="discord",
+                provider_user_id=user_id,
+                display_name=display_name,
+            ),
+            sent_at=datetime.now(tz=timezone.utc),
+            text=text,
+            raw={"force_respond": True},
+        )
+
     @commands.hybrid_command(
         name="deile",
         description="Passthrough direto ao DEILE worker (sem o bot narrar em cima)",
@@ -40,28 +81,18 @@ class AgentCog(commands.Cog):
     async def deile(self, ctx: commands.Context, *, prompt: str) -> None:
         await ctx.defer(ephemeral=False)
         try:
-            channel = ctx.channel
-            scope = (
-                ChannelScope.DM
-                if isinstance(channel, discord.DMChannel)
-                else ChannelScope.THREAD if isinstance(channel, discord.Thread)
-                else ChannelScope.GROUP
-            )
-            channel_name = getattr(channel, "name", None)
-            channel_id = str(channel.id)
-            display_name = (
-                getattr(ctx.author, "display_name", None)
-                or ctx.author.name
-            )
+            # Single ctx→envelope mapping shared with the test suite, so
+            # teste e produção exercem o mesmo caminho (ver docstring do módulo).
+            env = self._make_envelope(ctx, prompt)
             result = await run_slash_dispatch(
-                prompt=prompt,
-                user_id=str(ctx.author.id),
-                display_name=display_name,
-                channel_id=channel_id,
+                prompt=env.text,
+                user_id=env.author.provider_user_id,
+                display_name=env.author.display_name,
+                channel_id=env.channel.provider_channel_id,
                 store=self.runtime.pipeline.store,
                 identity=self.runtime.pipeline.identity,
-                channel_scope=scope,
-                channel_name=channel_name,
+                channel_scope=env.channel.scope,
+                channel_name=env.channel.name,
             )
 
             if result.kind == "blocked":

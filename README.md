@@ -485,10 +485,25 @@ Antes de deploy em produção com GPU, execute em nó com GPU:
 > **Deploy K8s com GPU** (resource limits, nodeSelector, tolerations, imagem CUDA) vive em
 > `infra/k8s/` no repositório `deile` — não neste (ver `README.md:165`).
 
-### SLO de latência
+### SLO de latência e qualidade (WER)
 
-Ver `docs/transcription-local-slo.md`. O benchmark RTF roda local via
-`scripts/bench_transcription_local.py` (fora do CI).
+Ver [`docs/transcription-local-slo.md`](docs/transcription-local-slo.md).
+
+- **RTF benchmark**: `scripts/bench_transcription_local.py` (fora do CI).
+- **WER benchmark (AC-8)**: seção [AC-8 — Benchmark de WER](docs/transcription-local-slo.md#ac-8--benchmark-de-wer-manual-fora-do-ci) em `docs/transcription-local-slo.md` — threshold `WER ≤ 0,15`, human-gated (#38).
+
+### Dependência: PyAV para chunking cloud-Whisper
+
+O worker de transcrição cloud (engine `openai`) usa **PyAV (`av>=11`)** para
+dividir áudios longos em chunks temporais independentemente decodificáveis.
+A imagem de deploy do worker **deve incluir `av`**:
+
+```bash
+pip install 'deilebot[transcription]'  # ou [all-bots]
+```
+
+Não há Dockerfile neste repo — declare `av>=11` na imagem de produção.
+PyAV inclui wheels com ffmpeg embutido: sem binário de sistema ffmpeg necessário.
 
 ---
 
