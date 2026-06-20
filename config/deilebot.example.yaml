@@ -36,12 +36,22 @@ personas:
 providers:
   enabled_providers: ["discord"]
 
-# Login GitHub via Discord (/github_login). O método PAT funciona sem nada
-# aqui. O método OAuth (device flow) precisa do Client ID de um GitHub
-# OAuth App registrado — o Client ID é público, não é segredo.
-github:
-  oauth_client_id: ""
-  oauth_scope: "repo"
+# Login forge via Discord (/git login). O método PAT funciona sem nada aqui.
+# OAuth device flow (só GitHub) precisa do Client ID de um GitHub OAuth App.
+# GitLab: PAT como caminho primário em V1 (OAuth GitLab é V3).
+# Substitui o bloco `github:` anterior — quebra direta em V1.
+forge:
+  github:
+    host: "github.com"
+    oauth_client_id: ""
+    oauth_scope: "repo"
+    timeout: 15.0   # segundos; self-hosted lento pode precisar de valor maior
+
+  gitlab:
+    host: "gitlab.com"       # alterar para self-hosted, ex: "gitlab.myorg.com"
+    oauth_client_id: ""      # OAuth GitLab é V3 (roadmap); PAT funciona sem isso
+    oauth_scope: "api read_repository write_repository"
+    timeout: 15.0            # self-hosted lento: liberar egress na NetworkPolicy
 
 # Transcrição de áudio (STT via Whisper). api_key NUNCA aqui — use .env:
 #   DEILE_BOT_TRANSCRIPTION_API_KEY=sk-...

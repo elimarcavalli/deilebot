@@ -226,12 +226,16 @@ async def test_poll_device_flow_access_denied(monkeypatch, tmp_path):
         await svc.poll_device_flow("Iv1.abc123", grant)
 
 
-# ----- settings -----
+# ----- settings (migrado para ForgeSettings em V1) -----
 
-def test_github_settings_defaults():
-    from deilebot.foundation.settings import BotSettings, GitHubSettings
+def test_forge_settings_github_defaults():
+    """AC-14: GitHubSettings removido; BotSettings.forge.github.oauth_client_id disponível."""
+    from deilebot.foundation.settings import BotSettings, ForgeProviderSettings
 
-    gh = GitHubSettings()
+    gh = ForgeProviderSettings(host="github.com", oauth_scope="repo")
     assert gh.oauth_client_id == ""
     assert gh.oauth_scope == "repo"
-    assert BotSettings().github.oauth_client_id == ""
+    # Verificar via BotSettings.forge (não mais BotSettings.github)
+    settings = BotSettings()
+    assert settings.forge.github.oauth_client_id == ""
+    assert not hasattr(settings, "github"), "BotSettings.github foi removido em V1 (AC-5)"

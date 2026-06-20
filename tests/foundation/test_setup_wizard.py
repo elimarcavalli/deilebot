@@ -155,9 +155,10 @@ async def test_non_tty_returns_config_error(tmp_path):
 # ----- fluxo local completo -----
 
 async def test_full_local_flow_writes_files(tmp_path):
+    # _step_forge agora pede: forge choice ("" → default "github") + oauth client id ("")
     w = _wizard(
         tmp_path,
-        inputs=["1", "123456789012345678", "n", "1", "8765", "", "s"],
+        inputs=["1", "123456789012345678", "n", "1", "8765", "", "", "s"],
         secrets_=["fake.discord.token", "sk-ant-test-key"],
         http=_ok_http,
     )
@@ -178,10 +179,11 @@ async def test_full_local_flow_writes_files(tmp_path):
 
 
 async def test_full_local_flow_multiple_owners(tmp_path):
+    # Extra "" for forge choice prompt added
     w = _wizard(
         tmp_path,
         inputs=["1", "111111111111111111", "s", "222222222222222222", "n",
-                "1", "8765", "", "s"],
+                "1", "8765", "", "", "s"],
         secrets_=["fake.token", "sk-key"],
         http=_ok_http,
     )
@@ -192,9 +194,10 @@ async def test_full_local_flow_multiple_owners(tmp_path):
 
 
 async def test_full_local_flow_cancelled_writes_nothing(tmp_path):
+    # Extra "" for forge choice prompt added
     w = _wizard(
         tmp_path,
-        inputs=["1", "123456789012345678", "n", "1", "8765", "", "n"],
+        inputs=["1", "123456789012345678", "n", "1", "8765", "", "", "n"],
         secrets_=["fake.discord.token", "sk-ant-test-key"],
         http=_ok_http,
     )
@@ -278,3 +281,91 @@ async def test_apply_container_without_deploy_script_raises(tmp_path):
         await w._apply_container(WizardConfig(mode="container",
                                               owner_ids=["123456789012345678"],
                                               llm_provider="openai", llm_key="k"))
+
+
+# ── AC-13: _step_forge — primeiro run ─────────────────────────────────────────
+
+def test_render_deilebot_yaml_github_only():
+    """Forge configurado = github → YAML tem bloco forge.github."""
+    cfg = WizardConfig(
+        owner_ids=["123456789012345678"],
+        github_oauth_client_id="Iv1.abc",
+        forges_configured=["github"],
+    )
+    text = _render_deilebot_yaml(cfg)
+    assert "forge:" in text
+    assert "github:" in text
+    assert 'oauth_client_id: "Iv1.abc"' in text
+    assert "gitlab:" not in text
+
+
+def test_render_deilebot_yaml_gitlab_included():
+    """Forge configurado = both → YAML tem blocos forge.github e forge.gitlab."""
+    cfg = WizardConfig(
+        owner_ids=["123456789012345678"],
+        forges_configured=["github", "gitlab"],
+        gitlab_host="gitlab.com",
+    )
+    text = _render_deilebot_yaml(cfg)
+    assert "forge:" in text
+    assert "github:" in text
+    assert "gitlab:" in text
+    assert 'host: "gitlab.com"' in text
+
+
+def test_render_deilebot_yaml_no_legacy_github_block():
+    """O YAML gerado NÃO deve ter o bloco `github:` top-level (só `forge:`)."""
+    cfg = WizardConfig(owner_ids=["111222333444555666"], forges_configured=["github"])
+    text = _render_deilebot_yaml(cfg)
+    assert "forge:" in text
+    # Garantir que não há `github:` fora do bloco forge
+    lines = text.splitlines()
+    top_level_github = [ln for ln in lines if ln.startswith("github:")]
+    assert not top_level_github, "Bloco `github:` top-level ainda presente!"
+
+
+# ── AC-19: idempotência do wizard — merge por forge ──────────────────────────
+
+def test_step_forge_github_only_no_gitlab_block():
+    """_step_forge com only github não inclui bloco gitlab no YAML."""
+    cfg = WizardConfig(forges_configured=["github"])
+    text = _render_deilebot_yaml(cfg)
+    assert "gitlab:" not in text
+
+
+def test_render_deilebot_yaml_merge_forge_both():
+    """Dois runs: 1º github, 2º only gitlab → ambos presentes no 2º render."""
+    # Simula re-run: cfg já tem github configurado e adiciona gitlab.
+    cfg = WizardConfig(
+        owner_ids=["123456789012345678"],
+        forges_configured=["github", "gitlab"],
+        github_oauth_client_id="Iv1.old",
+        gitlab_host="gitlab.myorg.com",
+    )
+    text = _render_deilebot_yaml(cfg)
+    assert "github:" in text
+    assert "gitlab:" in text
+    assert 'host: "gitlab.myorg.com"' in text
+    assert 'oauth_client_id: "Iv1.old"' in text
+
+
+async def test_step_forge_writes_gitlab_token_to_env(tmp_path):
+    """_step_forge com gitlab_token grava GITLAB_TOKEN no .env."""
+    cfg = WizardConfig(
+        mode="local",
+        discord_token="tok",
+        discord_app_id="123",
+        discord_bot_name="bot",
+        owner_ids=["123456789012345678"],
+        llm_provider="anthropic",
+        llm_key="sk-ant",
+        control_plane_token="ctrl-token",
+        forges_configured=["github", "gitlab"],
+        gitlab_token="glpat-TESTTOKEN",
+    )
+    w = _wizard(tmp_path, inputs=["s"])  # confirmação de gravar
+    w.local_yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    await w._apply_local(cfg)
+
+    env_text = (tmp_path / ".env").read_text()
+    assert "GITLAB_TOKEN=glpat-TESTTOKEN" in env_text

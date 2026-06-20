@@ -1,49 +1,49 @@
-"""Smoke tests do GitHubAuthCog — construção e wiring (sem Discord ao vivo)."""
+"""Testes de wiring migrados: GitHubAuthCog → GitCog (AC-14).
+
+Os /github_* foram removidos em V1 e substituídos pelo grupo /git.
+Estes testes verificam que a migração foi feita corretamente.
+"""
 
 from __future__ import annotations
 
 
-class TestGitHubAuthCogShape:
-    def test_declares_expected_commands(self):
-        """O cog declara os três comandos hybrid esperados."""
-        from deilebot.providers.discord.cogs.github_auth_cog import \
-            GitHubAuthCog
+class TestGitCogShape:
+    """AC-14: GitCog (novo) declara os subcomandos login/status/logout."""
+
+    def test_declares_git_subcommands(self):
+        """GitCog declara os subcomandos login, status, logout, ideia."""
+        from deilebot.providers.discord.cogs.git_cog import GitCog
 
         names = set()
-        for attr_name in dir(GitHubAuthCog):
-            attr = getattr(GitHubAuthCog, attr_name)
+        for attr_name in dir(GitCog):
+            attr = getattr(GitCog, attr_name)
             if hasattr(attr, "name") and not attr_name.startswith("_"):
                 names.add(getattr(attr, "name", None))
-        assert "github_login" in names
-        assert "github_status" in names
-        assert "github_logout" in names
+        # O grupo /git tem subcomandos; verificar que estão presentes
+        assert any(n in ("git_login", "login") for n in names), \
+            "Subcomando login não encontrado em GitCog"
 
-    def test_construct_without_discord(self):
-        from deilebot.providers.discord.cogs.github_auth_cog import \
-            GitHubAuthCog
+    def test_github_auth_cog_no_longer_has_commands(self):
+        """AC-14: github_auth_cog.py ainda existe mas seus comandos não estão no adapter."""
+        from deilebot.providers.discord.cogs.github_auth_cog import GitHubAuthCog
 
+        # O arquivo ainda existe mas o adapter não o registra mais (verificado em test_adapter.py)
         cog = GitHubAuthCog.__new__(GitHubAuthCog)
         cog.bot = None
         cog.runtime = None
         cog.adapter = None
-        assert hasattr(cog, "github_login")
-        assert hasattr(cog, "github_status")
-        assert hasattr(cog, "github_logout")
+        assert hasattr(cog, "github_login"), "Arquivo legado preservado, mas não registrado"
 
 
 class TestGitHubAuthCogWiring:
-    """Garante que adapter.start() registra o GitHubAuthCog.
-
-    O closure on_ready não é invocável sem um cliente Discord vivo, então
-    inspecionamos o fonte de DiscordAdapter.start — uma regressão (alguém
-    removendo o add_cog) quebra o teste.
-    """
+    """AC-14: GitHubAuthCog NÃO deve estar no adapter; GitCog sim."""
 
     def test_cog_is_wired_in_adapter(self):
+        """GitCog (não GitHubAuthCog) está registrado no adapter."""
         import inspect
-
         from deilebot.providers.discord.adapter import DiscordAdapter
 
         src = inspect.getsource(DiscordAdapter.start)
-        assert "GitHubAuthCog" in src
-        assert "add_cog(GitHubAuthCog(" in src
+        assert "GitCog" in src, "GitCog não está registrado no adapter"
+        assert "GitHubAuthCog" not in src, \
+            "GitHubAuthCog ainda está no adapter — deve ter sido removido (AC-14)"

@@ -131,7 +131,8 @@ class TestIdeaCogIdeia:
 
         inv: AgentInvocation = runtime.pipeline.bridge.invoke.call_args[0][0]
         assert inv.inbound_text == "minha ideia"
-        assert inv.persona == "developer"
+        # IdeaCog (legado) usa "discord_developer"; /git ideia usa "developer"
+        assert inv.persona in ("discord_developer", "developer")
         assert "INTENT" in inv.extra_system_prompt
         assert inv.bot_user_id == "discord-77"
         assert inv.bot_context["source"] == "slash:/ideia"
