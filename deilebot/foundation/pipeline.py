@@ -38,7 +38,7 @@ from deilebot.foundation.output_formatter import OutputFormatter
 from deilebot.foundation.permissions import Action, PermissionGate
 from deilebot.foundation.persona_selector import PersonaSelector
 from deilebot.foundation.rate_limit import RateLimiter
-from deilebot.foundation.settings import get_bot_settings
+from deilebot.foundation.settings import get_bot_settings, resolve_language
 
 
 @dataclass
@@ -574,6 +574,7 @@ class IngressPipeline:
         att_summaries = await self._materialize_attachments(
             env.attachments,
             transcription_service=self._transcription_service,
+            env=env,
         )
         # Append a <bot_context> block so the LLM (not just the tools) can
         # see channel/owner info and — critically — inbound attachments.
@@ -794,7 +795,9 @@ class IngressPipeline:
     _IMAGE_INLINE_BYTES_LIMIT = 4 * 1024 * 1024
     _IMAGE_DOWNLOAD_TIMEOUT_S = 12.0
 
-    async def _materialize_attachments(self, attachments, *, transcription_service=None) -> list:
+    async def _materialize_attachments(
+        self, attachments, *, transcription_service=None, env=None
+    ) -> list:
         """Build the bot_context.attachments list.
 
         For image kind, eagerly fetch + base64-encode (so DEILE doesn't
@@ -811,6 +814,20 @@ class IngressPipeline:
         except ImportError:
             httpx = None  # type: ignore[assignment]
 
+        # Resolve Whisper language once for all audio attachments in this request.
+        _transcription_language: Optional[str] = None
+        if transcription_service is not None:
+            _lang_setting = getattr(
+                getattr(transcription_service, "_settings", None), "language", "auto"
+            )
+            _guild_locale: Optional[str] = None
+            if env is not None:
+                _guild_locale = (
+                    getattr(env.channel, "locale", None)
+                    or (env.raw or {}).get("guild_locale")
+                )
+            _transcription_language = resolve_language(_lang_setting, _guild_locale)
+
         results: list = []
 
         async def _fetch_one(att):
@@ -826,7 +843,9 @@ class IngressPipeline:
             if kind_str.upper() == "AUDIO" and transcription_service is not None:
                 if transcription_service._settings.enabled and att.url:
                     try:
-                        transcript = await transcription_service.transcribe(att)
+                        transcript = await transcription_service.transcribe(
+                            att, language=_transcription_language
+                        )
                         entry["transcript"] = transcript
                     except Exception as exc:
                         entry["skip_reason"] = f"STT: {exc}"
