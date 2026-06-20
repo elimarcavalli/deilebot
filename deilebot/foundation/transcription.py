@@ -23,6 +23,10 @@ class TranscriptionError(Exception):
     """Raised for any STT failure; caught by the pipeline, never propagated."""
 
 
+class CUDAUnavailableError(TranscriptionError):
+    """Raised when local_device=cuda but CUDA is not available and local_cuda_fallback=fail."""
+
+
 class _LocalWhisperBackend:
     """faster-whisper backend for local/offline transcription."""
 
@@ -51,6 +55,7 @@ class _LocalWhisperBackend:
         self._device = settings.local_device
         self._compute_type = settings.local_compute_type
         self._timeout_s = settings.local_timeout_seconds
+        self._cuda_fallback = settings.local_cuda_fallback
         self._model = None
         self._logger = get_logger("transcription.local")
         self._load_model()
@@ -64,13 +69,45 @@ class _LocalWhisperBackend:
                 f"faster-whisper não instalado: {e}"
             ) from e
 
+        device = self._device
+        # Detect CUDA availability when cuda is requested; apply fallback policy
+        if device == "cuda":
+            cuda_ok = self._is_cuda_available()
+            if not cuda_ok:
+                if self._cuda_fallback == "cpu":
+                    self._logger.warning(
+                        "CUDA indisponível — usando CPU",
+                        extra={"device_fallback": "cuda->cpu"},
+                    )
+                    device = "cpu"
+                else:
+                    raise CUDAUnavailableError(
+                        "local_device=cuda mas CUDA indisponível; "
+                        "configure local_cuda_fallback: cpu para fallback automático"
+                    )
+
         # local_files_only=True enforced via str path (no HuggingFace download)
         self._model = WhisperModel(
             str(self._model_path),
-            device=self._device,
+            device=device,
             compute_type=self._compute_type,
             local_files_only=True,
         )
+        # Record the device actually used (may differ from configured if fallback occurred)
+        self._effective_device = device
+        self._logger.info(
+            "local model loaded",
+            extra={"device": device},
+        )
+
+    @staticmethod
+    def _is_cuda_available() -> bool:
+        """Return True if a CUDA device is accessible via CTranslate2."""
+        try:
+            import ctranslate2  # type: ignore[import]
+            return ctranslate2.get_cuda_device_count() > 0
+        except Exception:
+            return False
 
     def _transcribe_sync(self, audio_bytes: bytes) -> str:
         segments, _ = self._model.transcribe(

@@ -32,6 +32,10 @@ class TranscriptionSettings(BaseModel):
     local_device: Literal["cpu", "cuda"] = "cpu"
     local_compute_type: str = "int8"
     local_timeout_seconds: int = 60
+    # Behavior when local_device=cuda but CUDA is unavailable at model load time.
+    # "fail": raise CUDAUnavailableError (default — fail fast, operator must fix config)
+    # "cpu": fall back to CPU and emit a WARN log with device_fallback=cuda->cpu
+    local_cuda_fallback: Literal["fail", "cpu"] = "fail"
     language: Literal["auto", "pt", "en", "inherit_guild"] = "auto"
 
     # Chunking — áudios > max_duration_seconds são divididos em janelas

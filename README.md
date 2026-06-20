@@ -441,6 +441,57 @@ O ponto de entrada `deilebot.cli` expõe:
 
 ---
 
+## 🎙️ Engine de Transcrição Local (GPU toggle)
+
+O bot suporta transcrição offline via `faster-whisper` (CTranslate2).
+
+### Config
+
+```yaml
+# config/deilebot.yaml
+transcription:
+  engine: local
+  local_model_path: /path/to/ctranslate2-model   # diretório com model.bin
+  local_device: cpu        # cpu (default) | cuda (GPU)
+  local_compute_type: int8 # int8 (CPU) | float16 (GPU recomendado)
+  local_cuda_fallback: fail # fail (default) | cpu (fallback automático)
+  local_timeout_seconds: 60
+```
+
+### Toggle GPU
+
+| `local_device` | `local_cuda_fallback` | CUDA disponível? | Resultado |
+|----------------|-----------------------|-----------------|-----------|
+| `cpu`          | qualquer              | N/A             | CPU       |
+| `cuda`         | `fail` (default)      | sim             | CUDA      |
+| `cuda`         | `fail` (default)      | não             | Erro: "CUDA indisponível" |
+| `cuda`         | `cpu`                 | não             | Fallback CPU + WARN no log |
+
+O log confirma o device efetivamente usado:
+```json
+{"level": "info", "msg": "local model loaded", "device": "cpu"}
+```
+
+### Smoke test de GPU (manual — sem runner CI)
+
+Antes de deploy em produção com GPU, execute em nó com GPU:
+
+- [ ] `local_device: cuda`, `local_cuda_fallback: fail` → log `device=cuda` em `local model loaded`
+- [ ] Transcreve clipe de referência com resultado correto
+- [ ] Altera para `local_device: cpu` → log `device=cpu`
+- [ ] Com CUDA desabilitada e `local_cuda_fallback: fail` → erro explícito "CUDA indisponível"
+- [ ] Com CUDA desabilitada e `local_cuda_fallback: cpu` → WARN `device_fallback=cuda->cpu`, transcrição segue
+
+> **Deploy K8s com GPU** (resource limits, nodeSelector, tolerations, imagem CUDA) vive em
+> `infra/k8s/` no repositório `deile` — não neste (ver `README.md:165`).
+
+### SLO de latência
+
+Ver `docs/transcription-local-slo.md`. O benchmark RTF roda local via
+`scripts/bench_transcription_local.py` (fora do CI).
+
+---
+
 ## 📄 Licença
 
 Distribuído sob a MIT License.
