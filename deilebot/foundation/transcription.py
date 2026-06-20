@@ -1,8 +1,11 @@
-"""TranscriptionService — STT via OpenAI Whisper for audio attachments."""
+"""TranscriptionService — STT via OpenAI Whisper or local faster-whisper."""
 from __future__ import annotations
 
+import asyncio
 import io
 import os
+import time
+from pathlib import Path
 from typing import Optional
 
 from deilebot.foundation.logging import get_logger
@@ -19,6 +22,98 @@ class TranscriptionError(Exception):
     """Raised for any STT failure; caught by the pipeline, never propagated."""
 
 
+class _LocalWhisperBackend:
+    """faster-whisper backend for local/offline transcription."""
+
+    def __init__(self, settings: TranscriptionSettings) -> None:
+        model_path = settings.local_model_path
+        if model_path is None:
+            raise TranscriptionError(
+                "engine: local requer local_model_path configurado"
+            )
+        model_path = Path(model_path)
+        if not model_path.exists():
+            raise TranscriptionError(
+                f"local_model_path não existe: {model_path}"
+            )
+        if not model_path.is_dir():
+            raise TranscriptionError(
+                f"local_model_path deve ser um diretório CTranslate2: {model_path}"
+            )
+        # Validate the directory contains expected CTranslate2 files
+        model_bin = model_path / "model.bin"
+        if not model_bin.exists():
+            raise TranscriptionError(
+                f"local_model_path não contém model.bin — diretório CTranslate2 inválido: {model_path}"
+            )
+        self._model_path = model_path
+        self._device = settings.local_device
+        self._compute_type = settings.local_compute_type
+        self._timeout_s = settings.local_timeout_seconds
+        self._model = None
+        self._logger = get_logger("transcription.local")
+        self._load_model()
+
+    def _load_model(self) -> None:
+        # Import here so tests can mock before instantiation
+        try:
+            from faster_whisper import WhisperModel  # type: ignore[import]
+        except ImportError as e:
+            raise TranscriptionError(
+                f"faster-whisper não instalado: {e}"
+            ) from e
+
+        # local_files_only=True enforced via str path (no HuggingFace download)
+        self._model = WhisperModel(
+            str(self._model_path),
+            device=self._device,
+            compute_type=self._compute_type,
+            local_files_only=True,
+        )
+
+    def _transcribe_sync(self, audio_bytes: bytes) -> str:
+        segments, _ = self._model.transcribe(
+            io.BytesIO(audio_bytes),
+            beam_size=5,
+        )
+        return " ".join(seg.text.strip() for seg in segments).strip()
+
+    async def transcribe(self, audio_bytes: bytes) -> str:
+        logger = self._logger
+        t0 = time.monotonic()
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(self._transcribe_sync, audio_bytes),
+                timeout=self._timeout_s,
+            )
+        except asyncio.TimeoutError as e:
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            logger.warning(
+                "local transcription timeout",
+                extra={"engine": "local", "duration_ms": duration_ms, "outcome": "timeout"},
+            )
+            raise TranscriptionError(
+                f"transcrição local excedeu timeout de {self._timeout_s}s"
+            ) from e
+        except Exception as e:
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            logger.warning(
+                "local transcription error",
+                extra={"engine": "local", "duration_ms": duration_ms, "outcome": "error"},
+                exc_info=True,
+            )
+            raise TranscriptionError(
+                f"faster-whisper error: {type(e).__name__}: {e}"
+            ) from e
+
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "local transcription ok",
+            extra={"engine": "local", "duration_ms": duration_ms, "outcome": "ok"},
+        )
+        return result
+
+
 class TranscriptionService:
     def __init__(
         self,
@@ -28,6 +123,10 @@ class TranscriptionService:
         self._settings = settings
         self._budget = budget
         self._logger = get_logger("transcription")
+        self._local_backend: Optional[_LocalWhisperBackend] = None
+        if settings.engine == "local":
+            # Fail fast on init — not silently at first audio
+            self._local_backend = _LocalWhisperBackend(settings)
 
     def _get_api_key(self) -> Optional[str]:
         return os.environ.get("DEILE_BOT_TRANSCRIPTION_API_KEY")
@@ -76,7 +175,7 @@ class TranscriptionService:
         return result.text
 
     async def transcribe(self, att) -> str:
-        """Download att.url, enforce limits, call Whisper. Returns transcript text.
+        """Download att.url, enforce limits, call STT backend. Returns transcript text.
 
         Raises TranscriptionError on any failure — never swallows silently.
         """
@@ -98,6 +197,17 @@ class TranscriptionService:
             raise TranscriptionError(
                 f"teto mensal de transcrição atingido ({self._settings.max_minutes_per_month} min)"
             )
+
+        if self._settings.engine == "local":
+            assert self._local_backend is not None
+            try:
+                return await self._local_backend.transcribe(audio_bytes)
+            except TranscriptionError:
+                raise
+            except Exception as e:
+                raise TranscriptionError(
+                    f"local backend error: {type(e).__name__}: {e}"
+                ) from e
 
         filename = att.filename or "audio.ogg"
         mime = att.mime or "audio/ogg"
