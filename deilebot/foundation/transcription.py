@@ -63,7 +63,7 @@ class TranscriptionService:
         return len(audio_bytes) * 8 / _ASSUMED_BITRATE_BITS_PER_S
 
     async def _call_whisper(
-        self, audio_bytes: bytes, filename: str, mime: str
+        self, audio_bytes: bytes, filename: str, mime: str, *, language: Optional[str] = None
     ) -> str:
         api_key = self._get_api_key()
         if not api_key:
@@ -71,10 +71,13 @@ class TranscriptionService:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=api_key, timeout=_WHISPER_TIMEOUT_S)
-        result = await client.audio.transcriptions.create(
+        kwargs: dict = dict(
             model="whisper-1",
             file=(filename, io.BytesIO(audio_bytes), mime),
         )
+        if language is not None:
+            kwargs["language"] = language
+        result = await client.audio.transcriptions.create(**kwargs)
         return result.text
 
     async def _transcribe_chunk(
@@ -146,11 +149,16 @@ class TranscriptionService:
 
         return " ".join(texts)
 
-    async def transcribe(self, att) -> str:
+    async def transcribe(self, att, *, language: Optional[str] = None) -> str:
         """Download att.url, enforce limits, call Whisper. Returns transcript text.
 
+        ``language`` is an ISO-639-1 code (e.g. "pt", "en") or None for Whisper
+        auto-detection. Resolve it via ``settings.resolve_language`` before calling.
+
         For audio with duration > max_duration_seconds, splits into chunks and
-        transcribes in parallel. Raises TranscriptionError on any failure.
+        transcribes in parallel (the chunked path currently relies on Whisper
+        auto-detection per chunk). Raises TranscriptionError on any failure —
+        never swallows silently.
         """
         if not att.url:
             raise TranscriptionError("attachment has no URL")
@@ -181,7 +189,7 @@ class TranscriptionService:
                 ) from e
 
         try:
-            return await self._call_whisper(audio_bytes, filename, mime)
+            return await self._call_whisper(audio_bytes, filename, mime, language=language)
         except TranscriptionError:
             raise
         except Exception as e:

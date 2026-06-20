@@ -1,7 +1,10 @@
-"""AC-3 (integração handle→inbound_text) e AC-8 (não-regressão enabled=false)."""
+"""AC-3 (integração handle→inbound_text) e AC-8 (não-regressão enabled=false).
+AC-31 (language resolution via resolve_language in _materialize_attachments).
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -298,3 +301,119 @@ async def test_existing_image_tests_unaffected():
     assert entry["kind"] == "IMAGE"
     assert "data_base64" not in entry
     assert "transcript" not in entry
+
+
+# ── AC-31: language resolution in _materialize_attachments ───────────────────
+
+def _audio_envelope_with_locale(guild_locale: Optional[str]) -> MessageEnvelope:
+    raw_data: dict = {}
+    if guild_locale is not None:
+        raw_data["guild_locale"] = guild_locale
+    return MessageEnvelope(
+        message_id="msg-locale",
+        channel=_CHANNEL,
+        author=_BOT_USER,
+        sent_at=_FIXED_TS,
+        text="",
+        attachments=(
+            Attachment(
+                kind=AttachmentKind.AUDIO,
+                url="http://cdn.example.com/audio.ogg",
+                mime="audio/ogg",
+                filename="voice.ogg",
+            ),
+        ),
+        raw=MappingProxyType(raw_data),
+    )
+
+
+async def test_materialize_passes_resolved_language_pt():
+    """AC-31: setting=pt → transcribe() called with language='pt'."""
+    from deilebot.foundation.pipeline import IngressPipeline as Pipe
+
+    pipe = Pipe.__new__(Pipe)
+    pipe._logger = MagicMock()
+
+    svc = MagicMock(spec=TranscriptionService)
+    svc._settings = TranscriptionSettings(enabled=True, language="pt")
+    captured: list = []
+
+    async def _mock_transcribe(att, *, language=None):
+        captured.append(language)
+        return "olá"
+
+    svc.transcribe = _mock_transcribe
+
+    env = _audio_envelope_with_locale(None)
+    await pipe._materialize_attachments(env.attachments, transcription_service=svc, env=env)
+
+    assert captured == ["pt"], f"Expected ['pt'], got {captured}"
+
+
+async def test_materialize_passes_resolved_language_auto():
+    """AC-31: setting=auto → transcribe() called with language=None."""
+    from deilebot.foundation.pipeline import IngressPipeline as Pipe
+
+    pipe = Pipe.__new__(Pipe)
+    pipe._logger = MagicMock()
+
+    svc = MagicMock(spec=TranscriptionService)
+    svc._settings = TranscriptionSettings(enabled=True, language="auto")
+    captured: list = []
+
+    async def _mock_transcribe(att, *, language=None):
+        captured.append(language)
+        return "transcript"
+
+    svc.transcribe = _mock_transcribe
+
+    env = _audio_envelope_with_locale("pt-BR")
+    await pipe._materialize_attachments(env.attachments, transcription_service=svc, env=env)
+
+    assert captured == [None], f"Expected [None], got {captured}"
+
+
+async def test_materialize_inherit_guild_from_raw():
+    """AC-31: setting=inherit_guild, raw['guild_locale']='pt-BR' → language='pt'."""
+    from deilebot.foundation.pipeline import IngressPipeline as Pipe
+
+    pipe = Pipe.__new__(Pipe)
+    pipe._logger = MagicMock()
+
+    svc = MagicMock(spec=TranscriptionService)
+    svc._settings = TranscriptionSettings(enabled=True, language="inherit_guild")
+    captured: list = []
+
+    async def _mock_transcribe(att, *, language=None):
+        captured.append(language)
+        return "transcript"
+
+    svc.transcribe = _mock_transcribe
+
+    env = _audio_envelope_with_locale("pt-BR")
+    await pipe._materialize_attachments(env.attachments, transcription_service=svc, env=env)
+
+    assert captured == ["pt"], f"Expected ['pt'], got {captured}"
+
+
+async def test_materialize_inherit_guild_no_locale_falls_back_to_none():
+    """AC-31: setting=inherit_guild, no guild_locale → language=None (auto-detect)."""
+    from deilebot.foundation.pipeline import IngressPipeline as Pipe
+
+    pipe = Pipe.__new__(Pipe)
+    pipe._logger = MagicMock()
+
+    svc = MagicMock(spec=TranscriptionService)
+    svc._settings = TranscriptionSettings(enabled=True, language="inherit_guild")
+    captured: list = []
+
+    async def _mock_transcribe(att, *, language=None):
+        captured.append(language)
+        return "transcript"
+
+    svc.transcribe = _mock_transcribe
+
+    env = _audio_envelope_with_locale(None)
+    await pipe._materialize_attachments(env.attachments, transcription_service=svc, env=env)
+
+    assert captured == [None], f"Expected [None], got {captured}"

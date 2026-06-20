@@ -115,3 +115,27 @@ class TestNormalizer:
     def test_naive_datetime_normalized_to_utc(self):
         env = DiscordNormalizer().to_envelope(_msg(created_at=datetime(2026, 5, 2)))
         assert env.sent_at.tzinfo is not None
+
+    # ── AC-31: guild_locale captured in raw ──────────────────────────────────
+
+    def test_guild_locale_captured_in_raw(self):
+        """AC-31: guild.preferred_locale is stored in raw['guild_locale']."""
+        guild = SimpleNamespace(id=1234, preferred_locale="pt-BR")
+        msg = SimpleNamespace(
+            id=999,
+            content="oi",
+            channel=_make_channel("TextChannel", 1, name="geral"),
+            author=_user(),
+            attachments=[],
+            reference=None,
+            mentions=[],
+            created_at=datetime.now(timezone.utc),
+            guild=guild,
+        )
+        env = DiscordNormalizer().to_envelope(msg)
+        assert env.raw.get("guild_locale") == "pt-BR"
+
+    def test_guild_locale_absent_when_no_guild(self):
+        """AC-31: DM messages (guild=None) → raw['guild_locale'] is None."""
+        env = DiscordNormalizer().to_envelope(_msg(channel=_make_channel("DMChannel", 5)))
+        assert env.raw.get("guild_locale") is None
