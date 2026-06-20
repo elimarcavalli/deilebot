@@ -20,6 +20,15 @@ except ImportError:  # pragma: no cover
     SettingsConfigDict = None  # type: ignore[assignment]
 
 
+class TranscriptionSettings(BaseModel):
+    """STT config (non-secret). api_key MUST come from env DEILE_BOT_TRANSCRIPTION_API_KEY."""
+
+    engine: Literal["openai"] = "openai"
+    enabled: bool = False
+    max_duration_seconds: int = 120
+    max_minutes_per_month: int = 60
+
+
 class FoundationSettings(BaseSettings):
     sqlite_path: Path = Path("./data/deilebot.sqlite")
     sessions_sqlite_path: Path = Path("./data/deile_sessions.sqlite")
@@ -136,6 +145,7 @@ class BotSettings(BaseModel):
     permissions: PermissionsSettings = Field(default_factory=PermissionsSettings)
     personas: PersonaSettings = Field(default_factory=PersonaSettings)
     forge: ForgeSettings = Field(default_factory=ForgeSettings)
+    transcription: TranscriptionSettings = Field(default_factory=TranscriptionSettings)
 
 
 _YAML_PATH = Path("./config/deilebot.yaml")
@@ -186,6 +196,7 @@ def _build_settings() -> BotSettings:
     providers_data = yaml_data.get("providers", {})
     permissions_data = yaml_data.get("permissions", {})
     personas_data = yaml_data.get("personas", {})
+    transcription_data = yaml_data.get("transcription", {})
 
     # Support both `forge:` block (new) and legacy `github:` block (migration).
     forge_yaml = yaml_data.get("forge", {})
@@ -218,6 +229,7 @@ def _build_settings() -> BotSettings:
         permissions=PermissionsSettings(**permissions_data),
         personas=PersonaSettings(**personas_data),
         forge=ForgeSettings(github=github_settings, gitlab=gitlab_settings),
+        transcription=TranscriptionSettings(**transcription_data),
     )
 
 

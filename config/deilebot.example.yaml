@@ -53,6 +53,14 @@ forge:
     oauth_scope: "api read_repository write_repository"
     timeout: 15.0            # self-hosted lento: liberar egress na NetworkPolicy
 
+# Transcrição de áudio (STT via Whisper). api_key NUNCA aqui — use .env:
+#   DEILE_BOT_TRANSCRIPTION_API_KEY=sk-...
+transcription:
+  engine: openai
+  enabled: false
+  max_duration_seconds: 120
+  max_minutes_per_month: 60
+
 # Allowlist de repositórios que o deile-shell / deile-worker podem clonar
 # via git (modo container). Globs seguem as regras de fnmatch do Python.
 # Lista vazia ou campo ausente = qualquer repo é permitido.
