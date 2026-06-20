@@ -39,6 +39,7 @@ from deilebot.foundation.permissions import Action, PermissionGate
 from deilebot.foundation.persona_selector import PersonaSelector
 from deilebot.foundation.rate_limit import RateLimiter
 from deilebot.foundation.settings import get_bot_settings, resolve_language
+from deilebot.foundation.transcription import TranscriptionRejectedError
 
 
 @dataclass
@@ -396,6 +397,26 @@ class IngressPipeline:
         self.agent_meta = agent_meta
         self._transcription_service = transcription_service
         self._logger = get_logger("ingress")
+        self._transcription_metrics_seeded = False
+        # Configure transcription histogram with boundaries suited to STT latency.
+        # topo=300s covers max_duration_seconds (default 120s) with headroom.
+        self.metrics.configure_histogram(
+            "bot_transcription_seconds",
+            (1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+        )
+
+    async def seed_transcription_metrics(self) -> None:
+        """Re-seed bot_transcription_minutes_consumed_month from SQLite.
+
+        Gauges are in-memory and reset on pod restart; the SQLite counter
+        persists. Call this once at startup (or before first handle()) so the
+        gauge reflects the real month total immediately after restart.
+        """
+        if self._transcription_service is None:
+            return
+        used = await self._transcription_service.get_used_minutes()
+        self.metrics.gauge("bot_transcription_minutes_consumed_month", {}, used)
+        self._transcription_metrics_seeded = True
 
     def _load_monitor_client(self):
         """Lazy import of ``(MonitorClient, MonitorClientError)`` from the deile
@@ -481,6 +502,8 @@ class IngressPipeline:
         return True
 
     async def handle(self, env: MessageEnvelope, adapter) -> None:
+        if not self._transcription_metrics_seeded:
+            await self.seed_transcription_metrics()
         provider = env.channel.provider
         scope = env.channel.scope.value
         # 1. inbound audit + metric
@@ -860,12 +883,30 @@ class IngressPipeline:
             # Audio: attempt STT when transcription_service is wired and enabled
             if kind_str.upper() == "AUDIO" and transcription_service is not None:
                 if transcription_service._settings.enabled and att.url:
+                    import time as _time
+                    _metrics = getattr(self, "metrics", None)
+                    _t0 = _time.monotonic()
                     try:
                         transcript = await transcription_service.transcribe(
                             att, language=_transcription_language
                         )
                         entry["transcript"] = transcript
+                        if _metrics is not None:
+                            _elapsed = _time.monotonic() - _t0
+                            _metrics.observe("bot_transcription_seconds", {}, _elapsed)
+                            _metrics.inc("bot_transcription_total", {"status": "ok"})
+                            _used = await transcription_service.get_used_minutes()
+                            _metrics.gauge("bot_transcription_minutes_consumed_month", {}, _used)
+                    except TranscriptionRejectedError as exc:
+                        if _metrics is not None:
+                            _metrics.inc("bot_transcription_total", {"status": "rejected"})
+                        entry["skip_reason"] = f"STT: {exc}"
+                        self._logger.warning(
+                            "transcription rejected (budget) for %s: %s", att.url, exc
+                        )
                     except Exception as exc:
+                        if _metrics is not None:
+                            _metrics.inc("bot_transcription_total", {"status": "error"})
                         entry["skip_reason"] = f"STT: {exc}"
                         self._logger.warning(
                             "transcription failed for %s: %s", att.url, exc

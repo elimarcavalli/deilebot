@@ -23,6 +23,10 @@ class TranscriptionError(Exception):
     """Raised for any STT failure; caught by the pipeline, never propagated."""
 
 
+class TranscriptionRejectedError(TranscriptionError):
+    """Raised when transcription is blocked by the monthly budget cap."""
+
+
 class _LocalWhisperBackend:
     """faster-whisper backend for local/offline transcription."""
 
@@ -128,6 +132,10 @@ class TranscriptionService:
         if settings.engine == "local":
             # Fail fast on init — not silently at first audio
             self._local_backend = _LocalWhisperBackend(settings)
+
+    async def get_used_minutes(self) -> float:
+        """Return cumulative transcription minutes for the current calendar month."""
+        return await self._budget.get_used_minutes()
 
     def _get_api_key(self) -> Optional[str]:
         return os.environ.get("DEILE_BOT_TRANSCRIPTION_API_KEY")
@@ -256,7 +264,8 @@ class TranscriptionService:
         For audio with duration > max_duration_seconds, splits into chunks and
         transcribes in parallel (the chunked path currently relies on Whisper
         auto-detection per chunk). Raises TranscriptionError on any failure —
-        never swallows silently.
+        never swallows silently. Raises TranscriptionRejectedError when the
+        monthly budget is exhausted.
         """
         if not att.url:
             raise TranscriptionError("attachment has no URL")
@@ -269,7 +278,7 @@ class TranscriptionService:
             duration_s, self._settings.max_minutes_per_month
         )
         if not allowed:
-            raise TranscriptionError(
+            raise TranscriptionRejectedError(
                 f"teto mensal de transcrição atingido ({self._settings.max_minutes_per_month} min)"
             )
 
