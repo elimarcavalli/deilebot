@@ -27,6 +27,8 @@ class TranscriptionSettings(BaseModel):
     enabled: bool = False
     max_duration_seconds: int = 120
     max_minutes_per_month: int = 60
+    echo_transcript: bool = False
+    echo_max_chars: int = 200
     # local engine (faster-whisper) config
     local_model_path: Optional[Path] = None
     local_device: Literal["cpu", "cuda"] = "cpu"

@@ -62,6 +62,30 @@ class TelegramNormalizer:
                     size_bytes=getattr(doc, "file_size", None),
                 ),
             )
+        elif getattr(message, "voice", None):
+            v = message.voice
+            attachments = (
+                Attachment(
+                    kind=AttachmentKind.AUDIO,
+                    url=None,
+                    mime=getattr(v, "mime_type", None) or "audio/ogg",
+                    filename=None,
+                    size_bytes=getattr(v, "file_size", None),
+                    provider_media_ref=str(v.file_id),
+                ),
+            )
+        elif getattr(message, "audio", None):
+            a = message.audio
+            attachments = (
+                Attachment(
+                    kind=AttachmentKind.AUDIO,
+                    url=None,
+                    mime=getattr(a, "mime_type", None) or "audio/mpeg",
+                    filename=getattr(a, "file_name", None),
+                    size_bytes=getattr(a, "file_size", None),
+                    provider_media_ref=str(a.file_id),
+                ),
+            )
         reply = None
         if getattr(message, "reply_to_message", None):
             r = message.reply_to_message

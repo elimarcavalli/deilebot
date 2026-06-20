@@ -78,6 +78,7 @@ class Attachment:
     mime: Optional[str] = None
     filename: Optional[str] = None
     size_bytes: Optional[int] = None
+    provider_media_ref: Optional[str] = None
 
     @property
     def is_inline(self) -> bool:

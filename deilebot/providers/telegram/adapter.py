@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any, Mapping, Optional, Sequence
 
 from deilebot.foundation.envelope import Attachment, BotUser, Channel
@@ -37,6 +38,38 @@ class TelegramAdapter(ProviderAdapter):
     def self_user_id(self) -> str:
         return self._self_user_id
 
+    async def _resolve_audio_urls(
+        self, env, bot, token: str
+    ):
+        """Resolve Telegram file_id refs in AUDIO attachments to HTTPS download URLs."""
+        if not any(
+            getattr(att, "provider_media_ref", None)
+            for att in env.attachments
+        ):
+            return env
+        resolved = list(env.attachments)
+        changed = False
+        for i, att in enumerate(resolved):
+            if (
+                att.kind.value == "AUDIO"
+                and getattr(att, "provider_media_ref", None)
+                and not att.url
+            ):
+                try:
+                    tg_file = await bot.get_file(att.provider_media_ref)
+                    url = f"https://api.telegram.org/file/bot{token}/{tg_file.file_path}"
+                    resolved[i] = dataclasses.replace(att, url=url)
+                    changed = True
+                except Exception:
+                    self._logger.warning(
+                        "telegram: could not resolve file_id %s",
+                        att.provider_media_ref,
+                        exc_info=True,
+                    )
+        if changed:
+            return dataclasses.replace(env, attachments=tuple(resolved))
+        return env
+
     async def start(self) -> None:
         token = self.settings.token.get_secret_value()
         if not token:
@@ -57,11 +90,19 @@ class TelegramAdapter(ProviderAdapter):
                 return
             try:
                 env = adapter_ref.normalizer.to_envelope(update.message)
+                env = await adapter_ref._resolve_audio_urls(
+                    env, context.bot, token
+                )
                 await adapter_ref.on_inbound(env, adapter_ref)
             except Exception:
                 adapter_ref._logger.exception("on_message handler raised")
 
-        self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_message))
+        self._app.add_handler(
+            MessageHandler(
+                (filters.TEXT & ~filters.COMMAND) | filters.VOICE | filters.AUDIO,
+                _on_message,
+            )
+        )
         await self._app.initialize()
         await self._app.start()
         if not self.settings.use_webhook:
